@@ -12,7 +12,7 @@ import numpy as np
 
 if __name__ == "__main__":
     num_envs = 2
-    env = AllegroScrewdriverTurningEnv(num_envs, control_mode='joint_impedance', viewer=True,
+    env = AllegroScrewdriverTurningEnv(num_envs, control_mode='joint_impedance', viewer=False,
     steps_per_action=60,
     device = 'cuda:0',
     friction_coefficient=1.0,

@@ -11,6 +11,9 @@ setup(
     description="Multi-finger Reorientation Benchmark featuring dexterous manipulation in ARMLab in NVIDIA IsaacGym.",
     keywords=["robotics"],
     include_package_data=True,
+    package_data={
+        "MFR_benchmark.isaac_lab_tasks.screwdriver_turning.agents": ["*.yaml"],
+    },
     # python_requires=">=3.6.*",
     packages=find_packages("."),
     zip_safe=False,

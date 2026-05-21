@@ -3,6 +3,9 @@ import math
 from isaacgym import gymapi
 from isaacgym import gymutil
 from isaacgym import gymtorch
+# Isaac Gym Preview imports still reference deprecated NumPy aliases.
+if not hasattr(np, "float"):
+    np.float = float
 from isaacgym.torch_utils import *
 import torch
 
@@ -121,8 +124,9 @@ class AllegroEnv:
             sim_params.gravity = gymapi.Vec3(0.0, 0.0, 0.0)
         # self.sim = self.gym.create_sim(int(self.device[-1]), 0, gymapi.SIM_PHYSX, sim_params)
 
+        graphics_device_id = self.device_id if viewer else -1
         self.sim = self.gym.create_sim(self.device_id,
-                                       self.device_id, gymapi.SIM_PHYSX, sim_params)
+                                       graphics_device_id, gymapi.SIM_PHYSX, sim_params)
 
         # add ground plane
         plane_params = gymapi.PlaneParams()
@@ -1110,4 +1114,3 @@ class AllegroReorientationEnv(AllegroEnv):
         else:
             return True
     
-

@@ -11,17 +11,17 @@ class RLWrapper:
         self.env = env
         self.env.action_offset = action_offset
         self.max_episode_length = max_episode_length
-        self.progress_buf = torch.zeros(self.env.num_envs).cuda()
-        self.timeout_buf = torch.zeros(self.env.num_envs).cuda()
+        self.device = self.env.device
+        self.progress_buf = torch.zeros(self.env.num_envs, device=self.device)
+        self.timeout_buf = torch.zeros(self.env.num_envs, device=self.device)
         self.goal = goal
         self.action_space = spaces.Box(low=-2.0, high=2.0, shape=(self.env.robot_dof,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(n_obs,), dtype=np.float32)
-        self.device = self.env.device
     def reward(self, state, action):
         raise NotImplementedError
     
     def check_done(self, state):
-        return torch.zeros(self.env.num_envs).bool().cuda()
+        return torch.zeros(self.env.num_envs, dtype=torch.bool, device=self.device)
         # raise NotImplementedError
     def step(self, action):
         action = action.to(device=self.device)
@@ -29,7 +29,7 @@ class RLWrapper:
         reward = self.reward(state, action)
         done = self.check_done(state)
         self.timeout_buf = torch.where(self.progress_buf >= self.max_episode_length, torch.ones_like(self.timeout_buf),
-                                       torch.zeros_like(self.timeout_buf)).cuda()
+                                       torch.zeros_like(self.timeout_buf)).to(self.device)
         
         done = done.squeeze(-1)
         reset_buf = done | self.timeout_buf.bool()
@@ -40,7 +40,7 @@ class RLWrapper:
         done = reset_buf
         # dropped = (abs(state[:, -3]) > 1.0) | (abs(state[:, -2]) > 1.0)
         info = {'time_outs': self.timeout_buf, 'final_distance2goal': distance2goal}
-        state = {'obs': state.cuda(), 'priv_info': state.cuda()}
+        state = {'obs': state.to(self.device), 'priv_info': state.to(self.device)}
 
         self.progress_buf += 1
 
@@ -48,9 +48,9 @@ class RLWrapper:
     def reset(self, env_idx=None): 
         self.env.reset(env_idx)
         state = self.env.get_state()
-        self.progress_buf = torch.zeros(self.env.num_envs).cuda()
-        self.timeout_buf = torch.zeros(self.env.num_envs).cuda()
-        state = {'obs': state.cuda(), 'priv_info': state.cuda()}
+        self.progress_buf = torch.zeros(self.env.num_envs, device=self.device)
+        self.timeout_buf = torch.zeros(self.env.num_envs, device=self.device)
+        state = {'obs': state.to(self.device), 'priv_info': state.to(self.device)}
         return state
     
 class AllegroScrewdriverRLWrapper(RLWrapper):
@@ -62,7 +62,7 @@ class AllegroScrewdriverRLWrapper(RLWrapper):
         assert len(action.shape) == 2
         action_cost = torch.sum(action ** 2, dim=-1)
 
-        obj_orientation = state[:, -4:-1]
+        obj_orientation = state[:, -self.obj_dof:]
         goal_cost = torch.sum((20 * (obj_orientation - self.goal.to(self.device)) ** 2), dim=-1)
 
         #upright cost
@@ -71,7 +71,7 @@ class AllegroScrewdriverRLWrapper(RLWrapper):
         cost = action_cost + goal_cost + upright_cost
         cost = torch.nan_to_num(cost, nan=1e6)
         reward = -cost
-        return reward.cuda()
+        return reward.to(self.device)
     
     
 
