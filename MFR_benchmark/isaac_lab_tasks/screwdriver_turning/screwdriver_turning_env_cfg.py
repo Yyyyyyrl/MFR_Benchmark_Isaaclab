@@ -122,7 +122,7 @@ class AllegroScrewdriverTurningEnvCfg(DirectRLEnvCfg):
     screwdriver_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Screwdriver",
         spawn=sim_utils.UrdfFileCfg(
-            asset_path=str(ASSET_ROOT / "screwdriver/screwdriver.urdf"),
+            asset_path=str(ASSET_ROOT / "screwdriver/screwdriver_isaaclab.urdf"),
             fix_base=True,
             merge_fixed_joints=False,
             replace_cylinders_with_capsules=False,
