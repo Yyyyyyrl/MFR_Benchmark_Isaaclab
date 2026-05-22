@@ -11,8 +11,8 @@
             <box size="0.3 0.3 0.05"/>
         </geometry>
            <material name="Purple1">
-	 	<color rgba="0.9 0. 0.9 1.0"/>
-	</material>
+        <color rgba="0.9 0. 0.9 1.0"/>
+    </material>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0 0 -0.025"/>
@@ -27,6 +27,7 @@
     <child link="virtual_link_1"/>
     <origin rpy="0 0 0" xyz="0 0 0"/>
     <axis xyz="1 0 0"/>
+    <limit effort="100" lower="-0.5" upper="0.5" velocity="1.0"/>
 </joint>
 
 <link name="virtual_link_1">
@@ -40,6 +41,7 @@
     <child link="virtual_link_2"/>
     <origin rpy="0 0 0" xyz="0 0 0"/>
     <axis xyz="0 1 0"/>
+    <limit effort="100" lower="-0.5" upper="0.5" velocity="1.0"/>
 </joint>
 
 <link name="virtual_link_2">
@@ -53,6 +55,7 @@
     <child link="virtual_link_3"/>
     <origin rpy="0 0 0" xyz="0 0 0"/>
     <axis xyz="0 0 1"/>
+    <limit effort="100" lower="-0.5" upper="0.5" velocity="1.0"/>
 </joint>
 
 <link name="virtual_link_3">
@@ -106,7 +109,7 @@
             <cylinder radius="0.02" length="0.15"/>
         </geometry>
         <material name="Red1">
-	 	    <color rgba="0.9 0. 0. 0.5"/>
+            <color rgba="0.9 0. 0. 0.5"/>
         </material>
     </visual>
     <collision>
@@ -135,7 +138,7 @@
             <cylinder radius="0.005" length="0.1"/>
         </geometry>
         <material name="White">
-	 	    <color rgba="0.9 0.9 0.9 0.5"/>
+            <color rgba="0.9 0.9 0.9 0.5"/>
         </material>
     </visual>
     <collision>
@@ -164,7 +167,7 @@
             <cylinder radius="0.02" length="0.001"/>
         </geometry>
         <material name="Yellow">
-	 	    <color rgba="0.9 0.9 0. 1.0"/>
+            <color rgba="0.9 0.9 0. 1.0"/>
         </material>
     </visual>
     <collision>
