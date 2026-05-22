@@ -67,7 +67,7 @@ class AllegroScrewdriverManipulationEnvCfg(DirectRLEnvCfg):
     drop_threshold: float = -0.25
     reward_drop_weight: float = 1000.0
     termination_height: float = -0.30
-    reward_fingertip_distance_weight: float = 800.0
+    reward_fingertip_distance_weight: float = 300.0
 
     pregrasp_positions: dict[str, tuple[float, float, float, float]] = field(
         default_factory=lambda: {
@@ -98,7 +98,7 @@ class AllegroScrewdriverManipulationEnvCfg(DirectRLEnvCfg):
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.01, -0.028, 0.31),
+            pos=(0.01, -0.028, 0.29),
             rot=(0.5, -0.5, 0.5, 0.5),
             joint_pos={
                 "allegro_hand_hitosashi_finger_finger_joint_0": 0.0,
@@ -166,7 +166,7 @@ class AllegroScrewdriverManipulationEnvCfg(DirectRLEnvCfg):
             "position": ImplicitActuatorCfg(
                 joint_names_expr=["table_screwdriver_joint_1", "table_screwdriver_joint_2", "table_screwdriver_joint_3"],
                 stiffness=0.0,
-                damping=0.001,
+                damping=0.1,
             ),
             "orientation": ImplicitActuatorCfg(
                 joint_names_expr=["table_screwdriver_joint_4", "table_screwdriver_joint_5", "table_screwdriver_joint_6"],

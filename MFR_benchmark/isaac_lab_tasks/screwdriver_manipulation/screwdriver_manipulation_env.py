@@ -186,11 +186,14 @@ class AllegroScrewdriverManipulationEnv(DirectRLEnv):
         upright_cost = self.cfg.reward_upright_weight * torch.sum(ori[:, :2] ** 2, dim=-1)
         drop_cost = self.cfg.reward_drop_weight * torch.relu(self.cfg.drop_threshold - pos[:, 2]) ** 2
 
-        fingertip_pos = self.allegro.data.body_state_w[:, self._fingertip_body_ids, :3]  # (N, F, 3)
-        screwdriver_body_pos = self.screwdriver.data.body_state_w[:, self._screwdriver_body_id, :3]  # (N, 3)
-        finger_dists = torch.linalg.norm(fingertip_pos - screwdriver_body_pos.unsqueeze(1), dim=-1)  # (N, F)
-        mean_dist = torch.mean(finger_dists, dim=-1)  # (N,)
-        distance_cost = self.cfg.reward_fingertip_distance_weight * mean_dist
+        if self.cfg.reward_fingertip_distance_weight > 0:
+            fingertip_pos = self.allegro.data.body_state_w[:, self._fingertip_body_ids, :3]  # (N, F, 3)
+            screwdriver_body_pos = self.screwdriver.data.body_state_w[:, self._screwdriver_body_id, :3]  # (N, 3)
+            finger_dists = torch.linalg.norm(fingertip_pos - screwdriver_body_pos.unsqueeze(1), dim=-1)  # (N, F)
+            mean_dist = torch.mean(finger_dists, dim=-1)  # (N,)
+            distance_cost = self.cfg.reward_fingertip_distance_weight * mean_dist
+        else:
+            distance_cost = torch.zeros(self.num_envs, device=self.device)
 
         cost = action_cost + position_cost + orientation_cost + upright_cost + drop_cost + distance_cost
 
@@ -204,7 +207,8 @@ class AllegroScrewdriverManipulationEnv(DirectRLEnv):
         self.extras["eval_upright_cost"] = upright_cost.detach()
         self.extras["eval_drop_cost"] = drop_cost.detach()
         self.extras["eval_distance_cost"] = distance_cost.detach()
-        self.extras["eval_mean_fingertip_dist"] = mean_dist.detach()
+        if self.cfg.reward_fingertip_distance_weight > 0:
+            self.extras["eval_mean_fingertip_dist"] = mean_dist.detach()
 
         return -torch.nan_to_num(cost, nan=1.0e6)
 
