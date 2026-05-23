@@ -16,5 +16,13 @@ class AllegroScrewdriverTurning360EnvCfg(AllegroScrewdriverTurningEnvCfg):
     base task. Overrides only the task-level parameters needed for a full rotation.
     """
 
-    episode_length_s: float = 36.0  # 3x original — more time for a full rotation
+    episode_length_s: float = 36.0
     goal_euler_xyz: tuple[float, float, float] = (0.0, 0.0, -2.0 * math.pi)
+
+    # Lower goal weight — the squared error is 16x larger than the 90 task
+    # because the target is 4x farther away (2*pi vs pi/2).
+    reward_goal_weight: float = 50.0
+
+    # Directional progress reward: reward each radian of rotation toward the goal.
+    # This prevents the policy from learning the wrong turning direction.
+    reward_delta_weight: float = 50.0
