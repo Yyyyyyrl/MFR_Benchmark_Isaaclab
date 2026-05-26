@@ -30,7 +30,7 @@ Source: `MFR_benchmark/isaac_lab_tasks/screwdriver_turning/`
 
 ### Screwdriver Turning (360°)
 
-Variant requiring one full rotation (~360°). Inherits from the 90° task — only the config is overridden (`episode_length_s = 36.0`, `goal_euler_xyz = (0, 0, -2π)`). The Z-rotation joint is continuous (no limits), so the existing squared-error reward works without modification.
+Variant requiring one full rotation (~360°). Inherits from the 90° task — only the config is overridden (`episode_length_s = 36.0`, `goal_euler_xyz = (0, 0, -2π)`).
 
 Source: `MFR_benchmark/isaac_lab_tasks/screwdriver_turning_360/`
 
