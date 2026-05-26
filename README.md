@@ -72,7 +72,7 @@ Override config fields with Hydra CLI: `env.<field>=<value>`, `agent.params.<pat
 
 See `docs/screwdriver_turning_isaaclab_training.md` for full training commands and configuration options.
 
-## Original tasks (Isaac Gym, unported)
+## Remaining Original tasks (Isaac Gym, unported)
 
 These remain in `MFR_benchmark/tasks/` and `MFR_benchmark/wrapper/`, untouched:
 
