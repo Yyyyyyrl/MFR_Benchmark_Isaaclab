@@ -50,14 +50,14 @@ class AllegroScrewdriverTurningEnvCfg(DirectRLEnvCfg):
     # task behavior
     fingers: tuple[str, ...] = ("index", "middle", "thumb")
     friction_coefficient: float = 1.0
-    gradual_control: bool = True
+    gradual_control: bool = False
     action_offset: bool = True
     randomize_obj_start: bool = False
     reset_contact_steps: int = 32
     goal_euler_xyz: tuple[float, float, float] = (0.0, 0.0, -1.5707)
     reward_action_weight: float = 1.0
-    reward_goal_weight: float = 200.0
-    reward_upright_weight: float = 1000.0
+    reward_goal_weight: float = 20.0
+    reward_upright_weight: float = 10000.0
     pregrasp_positions: dict[str, tuple[float, float, float, float]] = field(
         default_factory=lambda: {
             "index": (0.1, 0.6, 0.6, 0.6),
