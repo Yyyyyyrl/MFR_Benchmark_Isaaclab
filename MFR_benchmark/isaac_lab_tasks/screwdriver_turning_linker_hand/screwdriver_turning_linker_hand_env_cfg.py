@@ -20,8 +20,8 @@ ASSET_ROOT = Path(__file__).resolve().parents[2] / "assets"
 
 
 @configclass
-class AllegroScrewdriverTurningEnvCfg(DirectRLEnvCfg):
-    """Configuration for the MFR Allegro screwdriver turning DirectRLEnv."""
+class AllegroScrewdriverTurningLinkerHandEnvCfg(DirectRLEnvCfg):
+    """Configuration for the MFR Linker Hand L20 screwdriver turning DirectRLEnv."""
 
     # env
     decimation = 60
@@ -54,24 +54,25 @@ class AllegroScrewdriverTurningEnvCfg(DirectRLEnvCfg):
     action_offset: bool = True
     randomize_obj_start: bool = False
     reset_contact_steps: int = 32
-    goal_euler_xyz: tuple[float, float, float] = (0.0, 0.0, -1.5707)
+    goal_euler_xyz: tuple[float, float, float] = (0.0, 0.0, 1.5707)
     reward_action_weight: float = 1.0
     reward_goal_weight: float = 20.0
     reward_upright_weight: float = 10000.0
     pregrasp_positions: dict[str, tuple[float, float, float, float]] = field(
         default_factory=lambda: {
-            "index": (0.1, 0.6, 0.6, 0.6),
-            "middle": (-0.1, 0.5, 0.9, 0.9),
-            "ring": (0.0, 0.5, 0.65, 0.65),
-            "thumb": (1.2, 0.3, 0.3, 1.2),
+            "index": (0.0, 0.4, 0.5, 0.4),
+            "middle": (0.0, 0.4, 0.5, 0.4),
+            "ring": (0.0, 0.4, 0.5, 0.4),
+            "pinky": (0.0, 0.4, 0.5, 0.4),
+            "thumb": (0.4, 0.35, 0.2, 0.3),
         }
     )
 
     # robot
     robot_cfg: ArticulationCfg = ArticulationCfg(
-        prim_path="/World/envs/env_.*/Allegro",
+        prim_path="/World/envs/env_.*/LinkerHand",
         spawn=sim_utils.UrdfFileCfg(
-            asset_path=str(ASSET_ROOT / "xela_models/allegro_hand_right_isaaclab.urdf"),
+            asset_path=str(ASSET_ROOT / "linker_hand_l20" / "linkerhand_l20_left.urdf"),
             fix_base=True,
             merge_fixed_joints=False,
             replace_cylinders_with_capsules=True,
@@ -87,25 +88,35 @@ class AllegroScrewdriverTurningEnvCfg(DirectRLEnvCfg):
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, -0.095, 1.33),
-            rot=(0.664463, 0.2418448, 0.2418448, 0.664463),
+            pos=(0.0, 0.095, 1.13),
+            rot=(0.664463, 0.2418448, -0.2418448, 0.664463),
             joint_pos={
-                "allegro_hand_hitosashi_finger_finger_joint_0": 0.1,
-                "allegro_hand_hitosashi_finger_finger_joint_1": 0.6,
-                "allegro_hand_hitosashi_finger_finger_joint_2": 0.6,
-                "allegro_hand_hitosashi_finger_finger_joint_3": 0.6,
-                "allegro_hand_naka_finger_finger_joint_4": -0.1,
-                "allegro_hand_naka_finger_finger_joint_5": 0.5,
-                "allegro_hand_naka_finger_finger_joint_6": 0.9,
-                "allegro_hand_naka_finger_finger_joint_7": 0.9,
-                "allegro_hand_kusuri_finger_finger_joint_8": 0.0,
-                "allegro_hand_kusuri_finger_finger_joint_9": 0.5,
-                "allegro_hand_kusuri_finger_finger_joint_10": 0.65,
-                "allegro_hand_kusuri_finger_finger_joint_11": 0.65,
-                "allegro_hand_oya_finger_joint_12": 1.2,
-                "allegro_hand_oya_finger_joint_13": 0.3,
-                "allegro_hand_oya_finger_joint_14": 0.3,
-                "allegro_hand_oya_finger_joint_15": 1.2,
+                # index finger
+                "index_mcp_roll": 0.0,
+                "index_mcp_pitch": 0.4,
+                "index_pip": 0.5,
+                "index_dip": 0.4,
+                # middle finger
+                "middle_mcp_roll": 0.0,
+                "middle_mcp_pitch": 0.4,
+                "middle_pip": 0.5,
+                "middle_dip": 0.4,
+                # ring finger (unused in default 3-finger config, but needed for articulation init)
+                "ring_mcp_roll": 0.0,
+                "ring_mcp_pitch": 0.4,
+                "ring_pip": 0.5,
+                "ring_dip": 0.4,
+                # pinky finger (unused in default 3-finger config, but needed for articulation init)
+                "pinky_mcp_roll": 0.0,
+                "pinky_mcp_pitch": 0.4,
+                "pinky_pip": 0.5,
+                "pinky_dip": 0.4,
+                # thumb (4 actuated + 1 mimic)
+                "thumb_cmc_yaw": 0.4,
+                "thumb_cmc_roll": 0.35,
+                "thumb_cmc_pitch": 0.2,
+                "thumb_mcp": 0.3,
+                "thumb_ip": 0.3,
             },
         ),
         actuators={
@@ -122,7 +133,7 @@ class AllegroScrewdriverTurningEnvCfg(DirectRLEnvCfg):
     screwdriver_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Screwdriver",
         spawn=sim_utils.UrdfFileCfg(
-            asset_path=str(ASSET_ROOT / "screwdriver/screwdriver_isaaclab.urdf"),
+            asset_path=str(ASSET_ROOT / "screwdriver" / "screwdriver_isaaclab.urdf"),
             fix_base=True,
             merge_fixed_joints=False,
             replace_cylinders_with_capsules=False,
