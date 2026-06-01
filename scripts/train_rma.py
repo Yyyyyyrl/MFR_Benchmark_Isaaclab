@@ -70,7 +70,9 @@ simulation_app = app_launcher.app
 """Rest of the training logic follows."""
 
 import os
+import sys
 import time
+import importlib
 import torch
 
 import gymnasium as gym
@@ -79,6 +81,13 @@ import gymnasium as gym
 import MFR_benchmark.isaac_lab_tasks  # noqa: F401
 
 from MFR_benchmark.rma import PPO, ProprioAdapt
+
+
+def _resolve_entry_point(entry_point_str: str):
+    """Resolve a 'module.path:ClassName' string to the actual class."""
+    module_path, class_name = entry_point_str.split(":")
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)
 
 
 def main():
@@ -91,34 +100,32 @@ def main():
     print(f"  Device: {device}")
     print("=" * 60)
 
-    # Create the environment via gym (uses Isaac Lab's gym registration)
-    env = gym.make(
-        args_cli.task,
-        num_envs=args_cli.num_envs,
-        headless=args_cli.headless,
-    )
+    # Get the environment configuration class from the gym registry
+    env_spec = gym.spec(args_cli.task)
+    env_cfg_cls = _resolve_entry_point(env_spec.kwargs["env_cfg_entry_point"])
+    env_cfg = env_cfg_cls()
+
+    # Override config with CLI args
+    env_cfg.scene.num_envs = args_cli.num_envs
 
     # Enable asymmetric (privileged) observations for RMA
-    env.cfg.asymmetric_obs = True
-    env.cfg.prop_hist_len = args_cli.prop_hist_len
-    env.cfg.privileged_obs_dim = args_cli.privileged_obs_dim
-    env.cfg.history_obs_dim = args_cli.history_obs_dim
+    env_cfg.asymmetric_obs = True
+    env_cfg.prop_hist_len = args_cli.prop_hist_len
+    env_cfg.privileged_obs_dim = args_cli.privileged_obs_dim
+    env_cfg.history_obs_dim = args_cli.history_obs_dim
 
-    # Re-initialize the RMA buffers with the correct config values
-    # (env.__init__ already ran with default cfg values, so we override)
-    env._asymmetric_obs = True
-    env._prop_hist_len = args_cli.prop_hist_len
-    env._history_obs_dim = args_cli.history_obs_dim
-    env._proprio_hist_buf = torch.zeros(
-        (env.num_envs, env._prop_hist_len, env._history_obs_dim),
-        dtype=torch.float32,
-        device=env.device,
-    )
+    # Create the environment via gym with the config object
+    env = gym.make(args_cli.task, cfg=env_cfg)
+    # Use the raw (unwrapped) env for training — the Gymnasium OrderEnforcing
+    # wrapper doesn't delegate custom attributes like num_finger_dofs.
+    env = env.unwrapped
 
     num_finger_dofs = env.num_finger_dofs
+    obs_space = env.single_observation_space
+    obs_shape = obs_space.shape if not hasattr(obs_space, 'spaces') else obs_space['policy'].shape
     print(f"  Num envs: {env.num_envs}")
     print(f"  Finger DOFs: {num_finger_dofs}")
-    print(f"  Obs dim (policy): {env.single_observation_space.shape}")
+    print(f"  Obs dim (policy): {obs_shape}")
     print(f"  Action dim: {env.single_action_space.shape}")
     print(f"  Privileged obs dim: {args_cli.privileged_obs_dim}")
     print(f"  History length: {args_cli.prop_hist_len}")

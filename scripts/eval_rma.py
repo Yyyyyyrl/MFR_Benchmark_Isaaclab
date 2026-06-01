@@ -65,6 +65,8 @@ simulation_app = app_launcher.app
 
 """Rest of the evaluation logic follows."""
 
+import sys
+import importlib
 import torch
 import gymnasium as gym
 
@@ -72,6 +74,13 @@ import MFR_benchmark.isaac_lab_tasks  # noqa: F401
 
 from MFR_benchmark.rma.models import ActorCritic
 from MFR_benchmark.rma.running_mean_std import RunningMeanStd
+
+
+def _resolve_entry_point(entry_point_str: str):
+    """Resolve a 'module.path:ClassName' string to the actual class."""
+    module_path, class_name = entry_point_str.split(":")
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)
 
 
 def main():
@@ -84,26 +93,21 @@ def main():
     print(f"  Episodes: {args_cli.num_episodes}")
     print("=" * 60)
 
-    # Create environment
-    env = gym.make(
-        args_cli.task,
-        num_envs=args_cli.num_envs,
-        headless=args_cli.headless,
-    )
+    # Get config from gym registry
+    env_spec = gym.spec(args_cli.task)
+    env_cfg_cls = _resolve_entry_point(env_spec.kwargs["env_cfg_entry_point"])
+    env_cfg = env_cfg_cls()
+    env_cfg.scene.num_envs = args_cli.num_envs
 
     # Enable asymmetric observations
-    env.cfg.asymmetric_obs = True
-    env.cfg.prop_hist_len = args_cli.prop_hist_len
-    env.cfg.privileged_obs_dim = args_cli.privileged_obs_dim
-    env.cfg.history_obs_dim = args_cli.history_obs_dim
-    env._asymmetric_obs = True
-    env._prop_hist_len = args_cli.prop_hist_len
-    env._history_obs_dim = args_cli.history_obs_dim
-    env._proprio_hist_buf = torch.zeros(
-        (env.num_envs, env._prop_hist_len, env._history_obs_dim),
-        dtype=torch.float32,
-        device=env.device,
-    )
+    env_cfg.asymmetric_obs = True
+    env_cfg.prop_hist_len = args_cli.prop_hist_len
+    env_cfg.privileged_obs_dim = args_cli.privileged_obs_dim
+    env_cfg.history_obs_dim = args_cli.history_obs_dim
+
+    # Create environment and unwrap Gymnasium wrapper
+    env = gym.make(args_cli.task, cfg=env_cfg)
+    env = env.unwrapped
 
     # Build model
     obs_space = env.single_observation_space
