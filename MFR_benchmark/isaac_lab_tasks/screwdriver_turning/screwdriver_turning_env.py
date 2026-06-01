@@ -95,6 +95,21 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
 
         self._validate_spaces()
 
+        # ---- RMA: proprioceptive history buffer ----
+        # Stores the last N frames of [joint_positions, joint_targets]
+        # Shape: (num_envs, prop_hist_len, history_obs_dim)
+        self._prop_hist_len = self.cfg.prop_hist_len
+        self._history_obs_dim = self.cfg.history_obs_dim
+        self._proprio_hist_buf = torch.zeros(
+            (self.num_envs, self._prop_hist_len, self._history_obs_dim),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        # Current joint targets (tracked for history buffer)
+        self._cur_targets = self._default_finger_pos.clone()
+        # Flag: whether to provide privileged observations
+        self._asymmetric_obs = self.cfg.asymmetric_obs
+
     def _setup_scene(self):
         self.allegro = Articulation(self.cfg.robot_cfg)
         self.screwdriver = Articulation(self.cfg.screwdriver_cfg)
@@ -122,6 +137,11 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
             target_actions = target_actions + self._default_finger_pos
 
         self._target_actions = target_actions
+        self._cur_targets = target_actions.clone()
+
+        # Update proprioceptive history buffer for RMA
+        self._update_proprio_hist()
+
         if self.cfg.gradual_control:
             self._start_joint_pos = self.allegro.data.joint_pos[:, self._finger_joint_ids].clone()
             self._apply_step_count = 0
@@ -143,7 +163,14 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
         finger_q = self.allegro.data.joint_pos[:, self._finger_joint_ids]
         screwdriver_euler = self.screwdriver.data.joint_pos[:, self._screwdriver_euler_joint_ids]
         obs = torch.cat((finger_q, screwdriver_euler), dim=-1)
-        return {"policy": obs}
+
+        result = {"policy": obs}
+
+        if self._asymmetric_obs:
+            result["critic"] = self._compute_privileged_info()
+            result["proprio_hist"] = self._proprio_hist_buf.clone()
+
+        return result
 
     def _get_rewards(self) -> torch.Tensor:
         obj_orientation = self.screwdriver.data.joint_pos[:, self._screwdriver_euler_joint_ids]
@@ -202,6 +229,19 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
 
         self._target_actions[env_ids] = robot_joint_pos[:, self._finger_joint_ids]
         self._start_joint_pos[env_ids] = robot_joint_pos[:, self._finger_joint_ids]
+        self._cur_targets[env_ids] = robot_joint_pos[:, self._finger_joint_ids]
+
+        # Initialize proprioceptive history buffer for reset envs
+        if self._asymmetric_obs:
+            finger_q = robot_joint_pos[:, self._finger_joint_ids]
+            init_frame = torch.cat(
+                [finger_q, self._cur_targets[env_ids]], dim=-1
+            )
+            # Fill entire history with the initial state
+            self._proprio_hist_buf[env_ids] = init_frame.unsqueeze(1).repeat(
+                1, self._prop_hist_len, 1
+            )
+
         self._settle_contacts()
 
     def _resolve_finger_joints(self) -> dict[str, list[int]]:
@@ -231,7 +271,11 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
     def _validate_spaces(self) -> None:
         expected_obs_dim = self.num_finger_dofs + self.obj_dof
         action_shape = getattr(self.single_action_space, "shape", None)
-        obs_shape = getattr(self.single_observation_space["policy"], "shape", None)
+        obs_space = self.single_observation_space
+        if hasattr(obs_space, "spaces"):  # gym.spaces.Dict
+            obs_shape = obs_space["policy"].shape
+        else:
+            obs_shape = obs_space.shape
         if action_shape != (self.num_finger_dofs,):
             raise ValueError(
                 f"action_space shape {action_shape} does not match configured fingers {self.fingers}; "
@@ -242,6 +286,63 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
                 f"observation_space shape {obs_shape} does not match configured fingers {self.fingers}; "
                 f"expected {(expected_obs_dim,)}."
             )
+
+    def _compute_privileged_info(self) -> torch.Tensor:
+        """Compute privileged (asymmetric) observations for teacher-student training.
+
+        Privileged info includes object state that would not be available
+        on a real robot, such as ground-truth pose, velocity, and dynamics
+        parameters. This is used by the teacher policy (Stage 1) and as
+        ground truth for the adaptation module (Stage 2).
+
+        Returns:
+            Tensor of shape (num_envs, privileged_obs_dim) with privileged info.
+        """
+        # Screwdriver euler angles (3)
+        screwdriver_euler = self.screwdriver.data.joint_pos[:, self._screwdriver_euler_joint_ids]
+
+        # Screwdriver angular velocity (3)
+        screwdriver_angvel = self.screwdriver.data.joint_vel[:, self._screwdriver_euler_joint_ids]
+
+        # Screwdriver root position relative to hand (3)
+        screwdriver_pos = self.screwdriver.data.root_pos_w - self.allegro.data.root_pos_w
+
+        # Screwdriver root orientation as quaternion (wxyz) (4)
+        screwdriver_quat = self.screwdriver.data.root_quat_w
+
+        # Friction coefficient (scalar, expanded to 1 dim)
+        friction = torch.full(
+            (self.num_envs, 1),
+            self.cfg.friction_coefficient,
+            dtype=torch.float32,
+            device=self.device,
+        )
+
+        priv_info = torch.cat(
+            [
+                screwdriver_euler,   # 3
+                screwdriver_angvel,  # 3
+                screwdriver_pos,     # 3
+                screwdriver_quat,    # 4
+                friction,            # 1
+            ],
+            dim=-1,
+        )
+        return priv_info
+
+    def _update_proprio_hist(self) -> None:
+        """Update the proprioceptive history buffer with the latest frame.
+
+        Each frame contains: [finger_joint_positions, current_joint_targets]
+        This sliding window provides the temporal context the adaptation
+        module uses to infer environment properties.
+        """
+        finger_q = self.allegro.data.joint_pos[:, self._finger_joint_ids]
+        # Pad if fewer fingers than history_obs_dim/2
+        frame = torch.cat([finger_q, self._cur_targets], dim=-1)
+        # Roll buffer and insert newest frame at the end
+        self._proprio_hist_buf = torch.roll(self._proprio_hist_buf, shifts=-1, dims=1)
+        self._proprio_hist_buf[:, -1, :] = frame
 
     def _settle_contacts(self) -> None:
         if self.cfg.reset_contact_steps <= 0:
