@@ -56,15 +56,15 @@ class AllegroScrewdriverTurningLinkerHandEnvCfg(DirectRLEnvCfg):
     reset_contact_steps: int = 32
     goal_euler_xyz: tuple[float, float, float] = (0.0, 0.0, 1.5707)
     reward_action_weight: float = 1.0
-    reward_goal_weight: float = 20.0
-    reward_upright_weight: float = 10000.0
+    reward_goal_weight: float = 20.0 
+    reward_upright_weight: float = 10000.0 # encourage upright orientation to prevent flipping the screwdriver around and losing contact
     pregrasp_positions: dict[str, tuple[float, float, float, float]] = field(
         default_factory=lambda: {
-            "index": (0.0, 0.4, 0.5, 0.4),
-            "middle": (0.0, 0.4, 0.5, 0.4),
-            "ring": (0.0, 0.4, 0.5, 0.4),
-            "pinky": (0.0, 0.4, 0.5, 0.4),
-            "thumb": (0.4, 0.35, 0.2, 0.3),
+            "index": (0.0, 0.35, 0.45, 0.35),
+            "middle": (0.0, 0.35, 0.45, 0.35),
+            "ring": (0.0, 0.35, 0.45, 0.35),
+            "pinky": (0.0, 0.35, 0.45, 0.35),
+            "thumb": (0.35, 0.3, 0.18, 0.25),
         }
     )
 
@@ -88,35 +88,35 @@ class AllegroScrewdriverTurningLinkerHandEnvCfg(DirectRLEnvCfg):
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.095, 1.13),
-            rot=(0.664463, 0.2418448, -0.2418448, 0.664463),
+            pos=(0.0, 0.03, 1.33),
+            rot=(0.7071, 0.0, 0.7071, 0.0),
             joint_pos={
                 # index finger
                 "index_mcp_roll": 0.0,
-                "index_mcp_pitch": 0.4,
-                "index_pip": 0.5,
-                "index_dip": 0.4,
+                "index_mcp_pitch": 0.35,
+                "index_pip": 0.45,
+                "index_dip": 0.35,
                 # middle finger
                 "middle_mcp_roll": 0.0,
-                "middle_mcp_pitch": 0.4,
-                "middle_pip": 0.5,
-                "middle_dip": 0.4,
+                "middle_mcp_pitch": 0.35,
+                "middle_pip": 0.45,
+                "middle_dip": 0.35,
                 # ring finger (unused in default 3-finger config, but needed for articulation init)
                 "ring_mcp_roll": 0.0,
-                "ring_mcp_pitch": 0.4,
-                "ring_pip": 0.5,
-                "ring_dip": 0.4,
+                "ring_mcp_pitch": 0.35,
+                "ring_pip": 0.45,
+                "ring_dip": 0.35,
                 # pinky finger (unused in default 3-finger config, but needed for articulation init)
                 "pinky_mcp_roll": 0.0,
-                "pinky_mcp_pitch": 0.4,
-                "pinky_pip": 0.5,
-                "pinky_dip": 0.4,
+                "pinky_mcp_pitch": 0.35,
+                "pinky_pip": 0.45,
+                "pinky_dip": 0.35,
                 # thumb (4 actuated + 1 mimic)
-                "thumb_cmc_yaw": 0.4,
-                "thumb_cmc_roll": 0.35,
-                "thumb_cmc_pitch": 0.2,
-                "thumb_mcp": 0.3,
-                "thumb_ip": 0.3,
+                "thumb_cmc_yaw": 0.35,
+                "thumb_cmc_roll": 0.3,
+                "thumb_cmc_pitch": 0.18,
+                "thumb_mcp": 0.25,
+                "thumb_ip": 0.25,
             },
         ),
         actuators={

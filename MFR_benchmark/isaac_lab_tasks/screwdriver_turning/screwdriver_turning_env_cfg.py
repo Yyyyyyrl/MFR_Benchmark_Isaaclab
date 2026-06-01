@@ -30,6 +30,13 @@ class AllegroScrewdriverTurningEnvCfg(DirectRLEnvCfg):
     observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(15,), dtype=np.float32)
     state_space = 0
 
+    # RMA (Rapid Motor Adaptation) settings
+    # When enabled, the env provides privileged observations for teacher-student training.
+    asymmetric_obs: bool = False
+    privileged_obs_dim: int = 14
+    prop_hist_len: int = 30
+    history_obs_dim: int = 24
+
     # simulation
     sim: SimulationCfg = SimulationCfg(
         dt=1.0 / 60.0,
