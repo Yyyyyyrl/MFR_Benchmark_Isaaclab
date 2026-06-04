@@ -221,6 +221,48 @@ class PPO:
         self.agent_steps = 0
         self.max_agent_steps = self.ppo_config.get("max_agent_steps", 1500000000)
         self.best_rewards = -10000.0
+        self.env_metric_keys = tuple(
+            self.ppo_config.get(
+                "env_metric_keys",
+                (
+                    "eval_total_turns",
+                    "eval_net_turns",
+                    "eval_turn_velocity",
+                    "eval_forward_turn_velocity",
+                    "eval_reverse_turn_velocity",
+                    "eval_screwdriver_upright_norm",
+                    "eval_turn_reward",
+                    "eval_reverse_cost",
+                    "eval_upright_cost",
+                    "eval_action_cost",
+                    "eval_action_rate_cost",
+                    "eval_goal_cost",
+                ),
+            )
+        )
+        self.env_metric_aliases = {
+            "eval_total_turns": "FwdTurns",
+            "eval_net_turns": "NetTurns",
+            "eval_turn_velocity": "TurnVel",
+            "eval_forward_turn_velocity": "FwdVel",
+            "eval_reverse_turn_velocity": "RevVel",
+            "eval_screwdriver_upright_norm": "Upright",
+            "eval_turn_reward": "TurnRew",
+            "eval_reverse_cost": "RevCost",
+            "eval_upright_cost": "UprightCost",
+            "eval_action_cost": "ActionCost",
+            "eval_action_rate_cost": "ActionRate",
+            "eval_goal_cost": "GoalCost",
+        }
+        self.last_env_metrics = {}
+        self.curriculum_config = self.ppo_config.get("curriculum", {})
+        self.curriculum_enabled = False
+        self.curriculum_phases = []
+        self.curriculum_phase_idx = -1
+        self.curriculum_phase_name = "none"
+        self.curriculum_phase_start_steps = 0
+        self.curriculum_last_wait_reason = ""
+        self._init_curriculum()
 
         # ---- Experience buffer ----
         self.storage = ExperienceBuffer(
@@ -288,6 +330,170 @@ class PPO:
         }
         return result
 
+    def _accumulate_env_metrics(self, extras, metric_sums, metric_counts):
+        if not isinstance(extras, dict):
+            return
+        for key in self.env_metric_keys:
+            value = extras.get(key, None)
+            if value is None:
+                continue
+            if isinstance(value, torch.Tensor):
+                if value.numel() == 0:
+                    continue
+                scalar = torch.nan_to_num(value.float()).mean().detach().cpu().item()
+            else:
+                try:
+                    scalar = float(value)
+                except (TypeError, ValueError):
+                    continue
+            metric_sums[key] = metric_sums.get(key, 0.0) + scalar
+            metric_counts[key] = metric_counts.get(key, 0) + 1
+
+    def _format_env_metrics(self):
+        if not self.last_env_metrics:
+            return ""
+        parts = []
+        for key in self.env_metric_keys:
+            if key not in self.last_env_metrics:
+                continue
+            alias = self.env_metric_aliases.get(key, key.replace("eval_", ""))
+            parts.append(f"{alias}: {self.last_env_metrics[key]:.3f}")
+        if not parts:
+            return ""
+        return " | " + " | ".join(parts)
+
+    def _init_curriculum(self):
+        self.curriculum_enabled = bool(self.curriculum_config.get("enabled", False))
+        self.curriculum_phases = list(self.curriculum_config.get("phases", ()))
+        if not self.curriculum_enabled:
+            return
+        if not self.curriculum_phases:
+            print("Continuous curriculum requested, but no phases were provided.")
+            self.curriculum_enabled = False
+            return
+        self._set_curriculum_phase(0, initial=True)
+
+    def _set_curriculum_phase(self, phase_idx, initial=False):
+        phase = self.curriculum_phases[phase_idx]
+        name = phase.get("name", f"phase{phase_idx + 1}")
+        overrides = phase.get("overrides", {})
+        applied = {}
+        cfg = getattr(self.env, "cfg", None)
+        if cfg is not None:
+            for key, value in overrides.items():
+                if hasattr(cfg, key):
+                    setattr(cfg, key, value)
+                    applied[key] = value
+
+        self.curriculum_phase_idx = phase_idx
+        self.curriculum_phase_name = name
+        self.curriculum_phase_start_steps = self.agent_steps
+        self.curriculum_last_wait_reason = ""
+
+        prefix = "Initial curriculum phase" if initial else "Curriculum phase"
+        if applied:
+            applied_text = ", ".join(f"{key}={value}" for key, value in sorted(applied.items()))
+            print(f"{prefix}: {phase_idx + 1}/{len(self.curriculum_phases)} {name} ({applied_text})")
+        else:
+            print(f"{prefix}: {phase_idx + 1}/{len(self.curriculum_phases)} {name}")
+
+        if self.writer:
+            self.writer.add_scalar("curriculum/phase_index", phase_idx, self.agent_steps)
+
+    def _format_curriculum(self):
+        if not self.curriculum_enabled:
+            return ""
+        return f"Curr: {self.curriculum_phase_name} | "
+
+    def _format_curriculum_gate(self):
+        if not self.curriculum_enabled:
+            return ""
+        if self.curriculum_phase_idx >= len(self.curriculum_phases) - 1:
+            return ""
+        if not self.curriculum_last_wait_reason:
+            return ""
+        return f" | Gate: {self.curriculum_last_wait_reason}"
+
+    def _metric_or_none(self, key):
+        value = self.last_env_metrics.get(key, None)
+        if value is None:
+            return None
+        return float(value)
+
+    def _curriculum_can_advance(self, mean_lengths):
+        if not self.curriculum_enabled:
+            return False, "disabled"
+        if self.curriculum_phase_idx < 0:
+            return False, "not initialized"
+        if self.curriculum_phase_idx >= len(self.curriculum_phases) - 1:
+            return False, "final phase"
+
+        phase = self.curriculum_phases[self.curriculum_phase_idx]
+        advance = phase.get("advance", {})
+        if not advance:
+            return False, "no advance rule"
+
+        phase_steps = self.agent_steps - self.curriculum_phase_start_steps
+        min_phase_steps = float(advance.get("min_phase_steps", 0.0))
+        if phase_steps < min_phase_steps:
+            return False, f"phase_steps {phase_steps:.0f} < {min_phase_steps:.0f}"
+
+        min_length = advance.get("min_episode_length", None)
+        if min_length is not None and mean_lengths < float(min_length):
+            return False, f"Len {mean_lengths:.1f} < {float(min_length):.1f}"
+
+        checks = (
+            ("eval_total_turns", "min_total_turns", ">="),
+            ("eval_net_turns", "min_net_turns", ">="),
+            ("eval_forward_turn_velocity", "min_forward_velocity", ">="),
+            ("eval_screwdriver_upright_norm", "max_upright", "<="),
+        )
+        for metric_key, rule_key, op in checks:
+            target = advance.get(rule_key, None)
+            if target is None:
+                continue
+            value = self._metric_or_none(metric_key)
+            if value is None:
+                return False, f"missing {metric_key}"
+            target = float(target)
+            if op == ">=" and value < target:
+                return False, f"{metric_key} {value:.3f} < {target:.3f}"
+            if op == "<=" and value > target:
+                return False, f"{metric_key} {value:.3f} > {target:.3f}"
+
+        min_fwd_minus_rev = advance.get("min_fwd_minus_rev", None)
+        if min_fwd_minus_rev is not None:
+            fwd = self._metric_or_none("eval_forward_turn_velocity")
+            rev = self._metric_or_none("eval_reverse_turn_velocity")
+            if fwd is None or rev is None:
+                return False, "missing forward/reverse velocity"
+            margin = fwd - rev
+            if margin < float(min_fwd_minus_rev):
+                return False, f"FwdVel-RevVel {margin:.3f} < {float(min_fwd_minus_rev):.3f}"
+
+        return True, "ready"
+
+    def _maybe_update_curriculum(self, mean_lengths):
+        can_advance, reason = self._curriculum_can_advance(mean_lengths)
+        self.curriculum_last_wait_reason = reason
+        if not can_advance:
+            return None
+
+        old_idx = self.curriculum_phase_idx
+        old_name = self.curriculum_phase_name
+        if self.curriculum_config.get("save_on_phase_change", True):
+            safe_name = old_name.replace("/", "_").replace(" ", "_")
+            self.save(os.path.join(self.nn_dir, f"curriculum_exit_{old_idx + 1}_{safe_name}"))
+
+        self._set_curriculum_phase(old_idx + 1)
+        if self.curriculum_config.get("reset_best_on_phase_change", True):
+            self.best_rewards = -10000.0
+
+        return (
+            f"Curriculum advanced: {old_name} -> {self.curriculum_phase_name} "
+            f"at {int(self.agent_steps // 1e6):04}M steps"
+        )
+
     def train(self):
         """Main training loop for Stage 1."""
         _t = time.time()
@@ -309,19 +515,26 @@ class PPO:
             last_fps = self.batch_size / (time.time() - _last_t)
             _last_t = time.time()
 
+            mean_rewards = self.episode_rewards.get_mean()
+            mean_lengths = self.episode_lengths.get_mean()
+            curriculum_event = self._maybe_update_curriculum(mean_lengths)
+            if curriculum_event:
+                print(curriculum_event)
+            metric_string = self._format_env_metrics()
+            curriculum_string = self._format_curriculum()
+            gate_string = self._format_curriculum_gate()
             info_string = (
                 f"Agent Steps: {int(self.agent_steps // 1e6):04}M | "
                 f"FPS: {all_fps:.1f} | Last FPS: {last_fps:.1f} | "
                 f"Collect: {self.data_collect_time / 60:.1f} min | "
                 f"Train: {self.rl_train_time / 60:.1f} min | "
-                f"Best: {self.best_rewards:.2f}"
+                f"{curriculum_string}"
+                f"Reward: {mean_rewards:.2f} | Len: {mean_lengths:.1f} | "
+                f"Best: {self.best_rewards:.2f}{metric_string}{gate_string}"
             )
             print(info_string)
 
             self._write_stats(a_losses, c_losses, b_losses, entropies, kls)
-
-            mean_rewards = self.episode_rewards.get_mean()
-            mean_lengths = self.episode_lengths.get_mean()
 
             if self.writer:
                 self.writer.add_scalar(
@@ -330,6 +543,14 @@ class PPO:
                 self.writer.add_scalar(
                     "episode_lengths/step", mean_lengths, self.agent_steps
                 )
+                for key, value in self.last_env_metrics.items():
+                    self.writer.add_scalar(f"env/{key}", value, self.agent_steps)
+                if self.curriculum_enabled:
+                    self.writer.add_scalar(
+                        "curriculum/phase_index",
+                        self.curriculum_phase_idx,
+                        self.agent_steps,
+                    )
 
             checkpoint_name = (
                 f"ep_{self.epoch_num}_step_{int(self.agent_steps // 1e6):04}M"
@@ -507,6 +728,8 @@ class PPO:
 
     def play_steps(self):
         """Collect rollout data by interacting with the environment."""
+        metric_sums = {}
+        metric_counts = {}
         for n in range(self.horizon_length):
             res_dict = self.model_act(self.obs)
 
@@ -521,6 +744,7 @@ class PPO:
             result = self.env.step(actions)
             # DirectRLEnv.step returns (obs_dict, rewards, terminated, timed_out, extras)
             obs_dict, rewards, terminated, timed_out, extras = result
+            self._accumulate_env_metrics(extras, metric_sums, metric_counts)
 
             # Compose done signal
             dones = terminated | timed_out
@@ -552,6 +776,12 @@ class PPO:
 
             # Prepare next observation
             self.obs = self._prepare_obs(obs_dict)
+
+        if metric_sums:
+            self.last_env_metrics = {
+                key: metric_sums[key] / max(metric_counts[key], 1)
+                for key in metric_sums
+            }
 
         # Final value for GAE
         res_dict = self.model_act(self.obs)
