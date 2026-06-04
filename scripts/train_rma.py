@@ -13,6 +13,10 @@ Usage:
         --stage 2 --num_envs 8192 --headless \
         --checkpoint outputs/rma/stage1/best.pth
 
+    # Continuous turning teacher policy
+    python scripts/train_rma.py --task Isaac-Allegro-Screwdriver-Continuous-Turning-Direct-v0 \
+        --stage 1 --num_envs 8192 --headless
+
 Requirements:
     conda activate env_isaaclab
     export PYTHONPATH=/home/user/MFR_benchmark:$PYTHONPATH
@@ -33,6 +37,34 @@ parser.add_argument("--task", type=str, default="Isaac-Allegro-Screwdriver-Turni
                     help="Gymnasium task ID")
 parser.add_argument("--num_envs", type=int, default=8192,
                     help="Number of parallel environments")
+parser.add_argument("--episode_length_s", type=float, default=None,
+                    help="Override env episode length in seconds/policy steps")
+
+# Continuous-turn reward override args. These are no-ops for tasks without the field.
+parser.add_argument("--continuous_phase1", action="store_true",
+                    help="Use a softer continuous-turn startup curriculum")
+parser.add_argument("--continuous_curriculum", action="store_true",
+                    help="Automatically tighten continuous-turn reward/termination settings during Stage 1")
+parser.add_argument("--turn_direction", type=float, default=None,
+                    help="Override continuous-turn direction: -1 for negative z, +1 for positive z")
+parser.add_argument("--reward_turn_weight", type=float, default=None,
+                    help="Override continuous-turn forward velocity reward weight")
+parser.add_argument("--turn_velocity_clip", type=float, default=None,
+                    help="Override continuous-turn velocity clip in rad/s")
+parser.add_argument("--reward_reverse_weight", type=float, default=None,
+                    help="Override continuous-turn reverse velocity penalty weight")
+parser.add_argument("--reward_upright_weight", type=float, default=None,
+                    help="Override screwdriver upright penalty weight")
+parser.add_argument("--upright_termination_threshold", type=float, default=None,
+                    help="Override upright termination threshold; <=0 disables it")
+parser.add_argument("--reward_action_weight", type=float, default=None,
+                    help="Override action magnitude penalty weight")
+parser.add_argument("--reward_action_rate_weight", type=float, default=None,
+                    help="Override action-rate penalty weight")
+parser.add_argument("--milestone_angle", type=float, default=None,
+                    help="Override milestone angle in radians")
+parser.add_argument("--milestone_bonus", type=float, default=None,
+                    help="Override milestone bonus")
 
 # RMA-specific args
 parser.add_argument("--stage", type=int, required=True, choices=[1, 2],
@@ -90,6 +122,139 @@ def _resolve_entry_point(entry_point_str: str):
     return getattr(module, class_name)
 
 
+def _set_cfg_if_present(env_cfg, name: str, value):
+    if value is None or not hasattr(env_cfg, name):
+        return False
+    setattr(env_cfg, name, value)
+    return True
+
+
+def _apply_env_overrides(env_cfg):
+    """Apply CLI overrides that are useful for curriculum tuning."""
+    overrides = {}
+
+    if args_cli.continuous_phase1 and not args_cli.continuous_curriculum:
+        phase1_defaults = {
+            "reward_turn_weight": 1500.0,
+            "reward_reverse_weight": 2000.0,
+            "turn_velocity_clip": 1.0,
+            "reward_upright_weight": 5.0,
+            "upright_termination_threshold": 0.0,
+            "reward_action_weight": 0.05,
+            "reward_action_rate_weight": 0.0,
+            "milestone_bonus": 0.0,
+        }
+        for name, value in phase1_defaults.items():
+            if hasattr(env_cfg, name):
+                setattr(env_cfg, name, value)
+                overrides[name] = value
+
+    for name in (
+        "episode_length_s",
+        "turn_direction",
+        "reward_turn_weight",
+        "turn_velocity_clip",
+        "reward_reverse_weight",
+        "reward_upright_weight",
+        "upright_termination_threshold",
+        "reward_action_weight",
+        "reward_action_rate_weight",
+        "milestone_angle",
+        "milestone_bonus",
+    ):
+        value = getattr(args_cli, name)
+        if _set_cfg_if_present(env_cfg, name, value):
+            overrides[name] = value
+
+    return overrides
+
+
+def _build_continuous_curriculum_config():
+    if not args_cli.continuous_curriculum:
+        return {"enabled": False}
+
+    return {
+        "enabled": True,
+        "reset_best_on_phase_change": True,
+        "save_on_phase_change": True,
+        "phases": [
+            {
+                "name": "phase1_spin_discovery",
+                "overrides": {
+                    "reward_turn_weight": 1500.0,
+                    "reward_reverse_weight": 2000.0,
+                    "turn_velocity_clip": 1.0,
+                    "reward_upright_weight": 5.0,
+                    "upright_termination_threshold": 0.0,
+                    "reward_action_weight": 0.05,
+                    "reward_action_rate_weight": 0.0,
+                    "milestone_bonus": 0.0,
+                },
+                "advance": {
+                    "min_phase_steps": 8_000_000,
+                    "min_episode_length": 45.0,
+                    "min_net_turns": 0.15,
+                    "min_fwd_minus_rev": 0.08,
+                    "max_upright": 2.0,
+                },
+            },
+            {
+                "name": "phase2_directional_stabilization",
+                "overrides": {
+                    "reward_turn_weight": 1000.0,
+                    "reward_reverse_weight": 1200.0,
+                    "turn_velocity_clip": 1.0,
+                    "reward_upright_weight": 25.0,
+                    "upright_termination_threshold": 0.0,
+                    "reward_action_weight": 0.10,
+                    "reward_action_rate_weight": 0.02,
+                    "milestone_bonus": 0.05,
+                },
+                "advance": {
+                    "min_phase_steps": 8_000_000,
+                    "min_episode_length": 45.0,
+                    "min_net_turns": 0.15,
+                    "min_fwd_minus_rev": 0.06,
+                    "max_upright": 1.20,
+                },
+            },
+            {
+                "name": "phase3_upright_recovery",
+                "overrides": {
+                    "reward_turn_weight": 500.0,
+                    "reward_reverse_weight": 700.0,
+                    "turn_velocity_clip": 0.75,
+                    "reward_upright_weight": 150.0,
+                    "upright_termination_threshold": 1.0,
+                    "reward_action_weight": 0.15,
+                    "reward_action_rate_weight": 0.05,
+                    "milestone_bonus": 0.10,
+                },
+                "advance": {
+                    "min_phase_steps": 8_000_000,
+                    "min_episode_length": 45.0,
+                    "min_net_turns": 0.10,
+                    "min_fwd_minus_rev": 0.04,
+                    "max_upright": 0.70,
+                },
+            },
+            {
+                "name": "phase4_strict_continuous_turning",
+                "overrides": {
+                    "reward_turn_weight": 200.0,
+                    "reward_reverse_weight": 250.0,
+                    "turn_velocity_clip": 0.5,
+                    "reward_upright_weight": 1000.0,
+                    "upright_termination_threshold": 0.5,
+                    "reward_action_weight": 0.25,
+                    "reward_action_rate_weight": 0.1,
+                    "milestone_bonus": 0.25,
+                },
+            },
+        ],
+    }
+
+
 def main():
     """Create environment and run RMA training."""
     device = args_cli.device if args_cli.device is not None else "cuda:0"
@@ -107,6 +272,7 @@ def main():
 
     # Override config with CLI args
     env_cfg.scene.num_envs = args_cli.num_envs
+    env_overrides = _apply_env_overrides(env_cfg)
 
     # Enable asymmetric (privileged) observations for RMA
     env_cfg.asymmetric_obs = True
@@ -130,6 +296,12 @@ def main():
     print(f"  Privileged obs dim: {args_cli.privileged_obs_dim}")
     print(f"  History length: {args_cli.prop_hist_len}")
     print(f"  History obs dim: {args_cli.history_obs_dim}")
+    if env_overrides:
+        print("  Env overrides:")
+        for name, value in sorted(env_overrides.items()):
+            print(f"    {name}: {value}")
+    if args_cli.continuous_curriculum:
+        print("  Continuous curriculum: enabled")
 
     # Training configuration
     network_config = {
@@ -158,6 +330,7 @@ def main():
         "normalize_value": True,
         "normalize_advantage": True,
         "value_bootstrap": True,
+        "curriculum": _build_continuous_curriculum_config(),
     }
 
     task_prefix = args_cli.task.replace("-", "_").replace("Isaac_", "")
