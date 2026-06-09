@@ -52,6 +52,9 @@ class AllegroScrewdriverTurningLinkerHandEnvCfg(DirectRLEnvCfg):
     friction_coefficient: float = 1.0
     gradual_control: bool = False
     action_offset: bool = True
+    action_clip: float = 0.45
+    clamp_joint_targets: bool = True
+    joint_target_margin: float = 0.02
     randomize_obj_start: bool = False
     reset_contact_steps: int = 32
     goal_euler_xyz: tuple[float, float, float] = (0.0, 0.0, 1.5707)
@@ -78,7 +81,7 @@ class AllegroScrewdriverTurningLinkerHandEnvCfg(DirectRLEnvCfg):
             replace_cylinders_with_capsules=True,
             make_instanceable=False,
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=False,
+                enabled_self_collisions=True,
                 solver_position_iteration_count=8,
                 solver_velocity_iteration_count=0,
             ),

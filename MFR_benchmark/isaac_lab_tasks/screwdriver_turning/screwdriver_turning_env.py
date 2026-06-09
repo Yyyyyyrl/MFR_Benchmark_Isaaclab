@@ -60,17 +60,15 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
 
         self.fingers = tuple(self.cfg.fingers)
         self.num_fingers = len(self.fingers)
-        self.num_finger_dofs = 4 * self.num_fingers
         self.obj_dof = 3
 
         self._finger_joint_ids_by_name = self._resolve_finger_joints()
         self._finger_joint_ids = [
             joint_id for finger in self.fingers for joint_id in self._finger_joint_ids_by_name[finger]
         ]
+        self.num_finger_dofs = len(self._finger_joint_ids)
         self._all_finger_joint_ids = [
-            joint_id
-            for finger in ("index", "middle", "ring", "thumb")
-            for joint_id in self._finger_joint_ids_by_name[finger]
+            joint_id for joint_ids in self._finger_joint_ids_by_name.values() for joint_id in joint_ids
         ]
 
         self._screwdriver_euler_joint_ids = self._find_ordered_joints(
@@ -84,8 +82,18 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
         self._default_finger_pos = self._make_default_finger_pos(self.fingers)
         self._all_pregrasp_pos_by_finger = {
             finger: torch.tensor(self.cfg.pregrasp_positions[finger], dtype=torch.float32, device=self.device)
-            for finger in ("index", "middle", "ring", "thumb")
+            for finger in self._finger_joint_ids_by_name
         }
+        finger_limits = self.allegro.data.soft_joint_pos_limits[:, self._finger_joint_ids]
+        margin = max(0.0, float(getattr(self.cfg, "joint_target_margin", 0.0)))
+        self._finger_joint_lower = finger_limits[..., 0] + margin
+        self._finger_joint_upper = finger_limits[..., 1] - margin
+        invalid_margin = self._finger_joint_lower > self._finger_joint_upper
+        if torch.any(invalid_margin):
+            hard_limits = self.allegro.data.soft_joint_pos_limits[:, self._finger_joint_ids]
+            limit_mid = 0.5 * (hard_limits[..., 0] + hard_limits[..., 1])
+            self._finger_joint_lower = torch.where(invalid_margin, limit_mid, self._finger_joint_lower)
+            self._finger_joint_upper = torch.where(invalid_margin, limit_mid, self._finger_joint_upper)
         self._goal_euler = torch.tensor(self.cfg.goal_euler_xyz, dtype=torch.float32, device=self.device).unsqueeze(0)
 
         self._target_actions = self._default_finger_pos.clone()
@@ -131,10 +139,14 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        action_clip = float(getattr(self.cfg, "action_clip", 0.0))
+        if action_clip > 0.0:
+            actions = torch.clamp(actions, -action_clip, action_clip)
         self.actions = actions.clone()
         target_actions = actions.clone()
         if self.cfg.action_offset:
             target_actions = target_actions + self._default_finger_pos
+        target_actions = self._clamp_finger_targets(target_actions)
 
         self._target_actions = target_actions
         self._cur_targets = target_actions.clone()
@@ -156,6 +168,7 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
             self._apply_step_count += 1
         else:
             target = self._target_actions
+        target = self._clamp_finger_targets(target)
 
         self.allegro.set_joint_position_target(target, joint_ids=self._finger_joint_ids)
 
@@ -234,9 +247,7 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
         # Initialize proprioceptive history buffer for reset envs
         if self._asymmetric_obs:
             finger_q = robot_joint_pos[:, self._finger_joint_ids]
-            init_frame = torch.cat(
-                [finger_q, self._cur_targets[env_ids]], dim=-1
-            )
+            init_frame = self._make_proprio_frame(finger_q, self._cur_targets[env_ids])
             # Fill entire history with the initial state
             self._proprio_hist_buf[env_ids] = init_frame.unsqueeze(1).repeat(
                 1, self._prop_hist_len, 1
@@ -253,6 +264,11 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
         for finger, joint_names in FINGER_JOINT_NAMES.items():
             joint_ids_by_name[finger] = self._find_ordered_joints(self.allegro, joint_names)
         return joint_ids_by_name
+
+    def _clamp_finger_targets(self, targets: torch.Tensor) -> torch.Tensor:
+        if not getattr(self.cfg, "clamp_joint_targets", False):
+            return targets
+        return torch.clamp(targets, self._finger_joint_lower, self._finger_joint_upper)
 
     def _find_ordered_joints(self, articulation: Articulation, joint_names: Sequence[str]) -> list[int]:
         patterns = [f"^{re.escape(joint_name)}$" for joint_name in joint_names]
@@ -338,11 +354,25 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
         module uses to infer environment properties.
         """
         finger_q = self.allegro.data.joint_pos[:, self._finger_joint_ids]
-        # Pad if fewer fingers than history_obs_dim/2
-        frame = torch.cat([finger_q, self._cur_targets], dim=-1)
+        frame = self._make_proprio_frame(finger_q, self._cur_targets)
         # Roll buffer and insert newest frame at the end
         self._proprio_hist_buf = torch.roll(self._proprio_hist_buf, shifts=-1, dims=1)
         self._proprio_hist_buf[:, -1, :] = frame
+
+    def _make_proprio_frame(self, finger_q: torch.Tensor, joint_targets: torch.Tensor) -> torch.Tensor:
+        """Build one proprioceptive history frame and pad/truncate to cfg size."""
+        frame = torch.cat([finger_q, joint_targets], dim=-1)
+        frame_dim = frame.shape[-1]
+        if frame_dim == self._history_obs_dim:
+            return frame
+        if frame_dim > self._history_obs_dim:
+            return frame[:, : self._history_obs_dim]
+        pad = torch.zeros(
+            (frame.shape[0], self._history_obs_dim - frame_dim),
+            dtype=frame.dtype,
+            device=frame.device,
+        )
+        return torch.cat([frame, pad], dim=-1)
 
     def _settle_contacts(self) -> None:
         if self.cfg.reset_contact_steps <= 0:

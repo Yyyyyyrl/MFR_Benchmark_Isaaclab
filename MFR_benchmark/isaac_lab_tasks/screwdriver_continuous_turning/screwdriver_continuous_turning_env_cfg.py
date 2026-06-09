@@ -14,7 +14,7 @@ class AllegroScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningEnvCfg)
     """Continuous-turning variant of the legacy MFR screwdriver task.
 
     The original task's fixed goal is retained only for evaluation logging.
-    Training reward is based on signed negative-z rotation progress.
+    Training reward is based on HORA-style signed negative-z rotation progress.
     """
 
     episode_length_s: float = 60.0
@@ -24,19 +24,43 @@ class AllegroScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningEnvCfg)
     reward_goal_weight: float = 0.0
 
     # HORA-style directional turning objective. -1.0 means negative-z progress.
-    turn_direction: float = -1.0
     reward_turn_weight: float = 200.0
+    turn_direction: float = -1.0
     turn_velocity_clip: float = 1.0
     reward_reverse_weight: float = 250.0
 
-    # MFR-style stability, softened for initial continuous-turn exploration.
+    # Mounted-screwdriver analogue of HORA's object linear-motion penalty.
+    # The task should spin about z while keeping x/y tilt quiet.
     reward_upright_weight: float = 200.0
+    reward_tilt_velocity_weight: float = 5.0
     upright_termination_threshold: float = 1.0
 
-    # Regularization. Action cost uses sum(action**2); action-rate uses mean.
+    # HORA-like policy regularization. Action cost uses sum(action**2) for the
+    # 12-DOF Allegro setup; action-rate and finger velocity are mean penalties.
     reward_action_weight: float = 0.25
     reward_action_rate_weight: float = 0.1
+    reward_finger_pose_weight: float = 0.02
+    reward_finger_velocity_weight: float = 0.001
+    use_mean_action_penalty: bool = False
 
     # Small sparse helper for long-horizon progress logging/training.
     milestone_angle: float = 0.5 * math.pi
     milestone_bonus: float = 0.25
+
+    # Dense discovery shaping using body positions only, not contact sensors.
+    near_reward_weight: float = 0.2
+    near_reward_std: float = 0.03
+    near_reward_top_k: int = 2
+
+    # Gate spin rewards so a flicked screwdriver cannot coast for reward after
+    # the fingertips leave or stop moving. Set distance <= 0 to disable.
+    turn_reward_contact_distance: float = 0.075
+    turn_reward_min_contact_fingers: int = 2
+    turn_reward_min_fingertip_speed: float = 0.003
+    turn_reward_full_fingertip_speed: float = 0.015
+
+    # Optional contact-proxy termination. Kept off by default for the MFR
+    # pregrasp; curriculum can enable it after stable turning emerges.
+    lost_contact_termination_distance: float = 0.0
+    lost_contact_min_fingers: int = 1
+    lost_contact_grace_steps: int = 2
