@@ -1,0 +1,167 @@
+"""Configuration for continuous Linker Hand screwdriver turning."""
+
+import copy
+import math
+from dataclasses import field
+
+import gymnasium as gym
+import numpy as np
+
+from isaaclab.assets import ArticulationCfg
+from isaaclab.sim import SimulationCfg
+from isaaclab.utils import configclass
+
+from MFR_benchmark.isaac_lab_tasks.screwdriver_turning_linker_hand.screwdriver_turning_linker_hand_env_cfg import (
+    AllegroScrewdriverTurningLinkerHandEnvCfg,
+)
+
+
+def _make_continuous_linker_robot_cfg() -> ArticulationCfg:
+    robot_cfg = copy.deepcopy(AllegroScrewdriverTurningLinkerHandEnvCfg().robot_cfg)
+    robot_cfg.init_state.pos = (0.15,-0.06, 1.36)
+    robot_cfg.init_state.rot = (0.5, -0.5, -0.5, 0.5)  # 180 deg around X, then 90 deg around Z
+    robot_cfg.init_state.joint_pos.update(
+        {
+            "index_mcp_roll": 0.0,
+            "index_mcp_pitch": 0.55,
+            "index_pip": 1.20,
+            "index_dip": 1.07,
+
+            "middle_mcp_roll": 0.0,
+            "middle_mcp_pitch": 0.55,
+            "middle_pip": 1.20,
+            "middle_dip": 1.07,
+
+            "ring_mcp_roll": 0.0,
+            "ring_mcp_pitch": 0.55,
+            "ring_pip": 1.20,
+            "ring_dip": 1.07,
+
+            "pinky_mcp_roll": 0.0,
+            "pinky_mcp_pitch": 0.55,
+            "pinky_pip": 1.20,
+            "pinky_dip": 1.07,
+
+            "thumb_cmc_yaw": 0.5,
+            "thumb_cmc_roll": 1.2,
+            "thumb_cmc_pitch": 0.5,
+            "thumb_mcp": 0.6,
+            "thumb_ip": 0.6,
+        }
+    )
+    return robot_cfg
+
+
+def _make_continuous_linker_screwdriver_cfg() -> ArticulationCfg:
+    screwdriver_cfg = copy.deepcopy(AllegroScrewdriverTurningLinkerHandEnvCfg().screwdriver_cfg)
+    # The fixed-goal MFR task tolerates a lightly damped z joint, but the
+    # continuous-turn objective otherwise rewards flick-and-coast behavior.
+    tilt = screwdriver_cfg.actuators["tilt"]
+    tilt.stiffness = 20.0
+    tilt.damping = 2.0
+
+    rotation = screwdriver_cfg.actuators["rotation"]
+    rotation.stiffness = 0.0
+    rotation.damping = 0.01
+    rotation.friction = 0.0
+    rotation.dynamic_friction = 0.0
+    rotation.viscous_friction = 0.0
+
+    cap = screwdriver_cfg.actuators["cap"]
+    cap.stiffness = 50.0
+    cap.damping = 1.0
+    cap.friction = 0.0
+    cap.dynamic_friction = 0.0
+    cap.viscous_friction = 0.0
+    return screwdriver_cfg
+
+
+def _make_continuous_linker_sim_cfg() -> SimulationCfg:
+    sim_cfg = copy.deepcopy(AllegroScrewdriverTurningLinkerHandEnvCfg().sim)
+    sim_cfg.physx.gpu_max_rigid_patch_count = 2**20
+    return sim_cfg
+
+
+@configclass
+class LinkerHandScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningLinkerHandEnvCfg):
+    """Continuous-turning variant of the Linker Hand screwdriver task.
+
+    This uses the full five-finger independent Linker action set: three
+    non-mimic joints for each non-thumb finger plus four thumb joints.
+    Contact sensors are intentionally left for a later phase.
+    """
+
+    action_space = gym.spaces.Box(low=-2.0, high=2.0, shape=(16,), dtype=np.float32)
+    observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(19,), dtype=np.float32)
+    sim: SimulationCfg = _make_continuous_linker_sim_cfg()
+    episode_length_s: float = 60.0
+    # The side-grasp reset is already close to the handle. Extra contact-settle
+    # steps can preload the passive screwdriver tilt joints, so keep reset vertical.
+    reset_contact_steps: int = 0
+
+    fingers: tuple[str, ...] = ("index", "middle", "ring", "pinky", "thumb")
+    pregrasp_positions: dict[str, tuple[float, ...]] = field(
+        default_factory=lambda: {
+            "index": (0.0, 0.55, 0.9),
+            "middle": (0.0, 0.55, 0.9),
+            "ring": (0.0, 0.55, 0.9),
+            "pinky": (0.0, 0.55, 0.9),
+            "thumb": (0.35, 0.9, 0.6, 0.7)
+        }
+    )
+
+    # The base Linker task was ported with the palm above the screwdriver. For
+    # continuous turning, reset directly into a five-finger grasp around the
+    # screwdriver body/cap so early training receives contact-rich rollouts.
+    robot_cfg: ArticulationCfg = _make_continuous_linker_robot_cfg()
+    screwdriver_cfg: ArticulationCfg = _make_continuous_linker_screwdriver_cfg()
+
+    # RMA settings. The fixed-goal Linker config does not currently define these,
+    # but the inherited environment allocates history buffers when constructed.
+    asymmetric_obs: bool = False
+    privileged_obs_dim: int = 14
+    prop_hist_len: int = 30
+    history_obs_dim: int = 32
+
+    # Legacy 90-degree goal kept for metrics, not used by the continuous reward.
+    goal_euler_xyz: tuple[float, float, float] = (0.0, 0.0, -1.5707)
+    reward_goal_weight: float = 0.0
+
+    # HORA-style directional turning objective. -1.0 means negative-z progress.
+    turn_direction: float = -1.0
+    reward_turn_weight: float = 200.0
+    turn_velocity_clip: float = 1.0
+    reward_reverse_weight: float = 250.0
+
+    # Softened stability for continuous-turn exploration. Curriculum can tighten.
+    reward_upright_weight: float = 200.0
+    upright_termination_threshold: float = 1.0
+
+    # Regularization. Linker defaults to mean action penalty so the weight is
+    # stable across the 16 controlled joints.
+    reward_action_weight: float = 0.25
+    reward_action_rate_weight: float = 0.1
+    use_mean_action_penalty: bool = True
+
+    # Small sparse helper for long-horizon progress logging/training.
+    milestone_angle: float = 0.5 * math.pi
+    milestone_bonus: float = 0.25
+
+    # Dense discovery shaping. This uses body positions only; no contact sensors.
+    near_reward_weight: float = 0.2
+    near_reward_std: float = 0.03
+    near_reward_top_k: int = 2
+
+    # Gate turn reward so a flicked screwdriver cannot score while coasting past
+    # a stationary hand. Distances are measured to the nearest screwdriver link.
+    turn_reward_contact_distance: float = 0.075
+    turn_reward_min_contact_fingers: int = 2
+    turn_reward_min_fingertip_speed: float = 0.003
+    turn_reward_full_fingertip_speed: float = 0.015
+
+    # Terminate rollouts that have fully lost the screwdriver. Without contact
+    # sensors this uses fingertip distance to the nearest screwdriver link as a
+    # conservative contact proxy.
+    lost_contact_termination_distance: float = 0.085
+    lost_contact_min_fingers: int = 1
+    lost_contact_grace_steps: int = 2
