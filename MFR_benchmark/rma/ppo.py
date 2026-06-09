@@ -202,7 +202,13 @@ class PPO:
         # ---- Collection params ----
         self.horizon_length = self.ppo_config.get("horizon_length", 8)
         self.batch_size = self.horizon_length * self.num_actors
-        self.minibatch_size = self.ppo_config.get("minibatch_size", 32768)
+        requested_minibatch_size = int(self.ppo_config.get("minibatch_size", 32768))
+        self.minibatch_size = max(1, min(requested_minibatch_size, self.batch_size))
+        if requested_minibatch_size != self.minibatch_size:
+            print(
+                f"PPO minibatch_size {requested_minibatch_size} is larger than rollout batch "
+                f"{self.batch_size}; using {self.minibatch_size}."
+            )
         self.mini_epochs_num = self.ppo_config.get("mini_epochs", 5)
 
         # ---- Scheduler ----
@@ -234,8 +240,16 @@ class PPO:
                     "eval_turn_reward",
                     "eval_reverse_cost",
                     "eval_upright_cost",
+                    "eval_tilt_velocity_cost",
                     "eval_action_cost",
                     "eval_action_rate_cost",
+                    "eval_finger_pose_cost",
+                    "eval_finger_velocity_cost",
+                    "eval_near_reward",
+                    "eval_mean_fingertip_dist",
+                    "eval_turn_contact_count",
+                    "eval_turn_contact_gate",
+                    "eval_turn_motion_gate",
                     "eval_goal_cost",
                 ),
             )
@@ -250,8 +264,16 @@ class PPO:
             "eval_turn_reward": "TurnRew",
             "eval_reverse_cost": "RevCost",
             "eval_upright_cost": "UprightCost",
+            "eval_tilt_velocity_cost": "TiltVelCost",
             "eval_action_cost": "ActionCost",
             "eval_action_rate_cost": "ActionRate",
+            "eval_finger_pose_cost": "FingerPose",
+            "eval_finger_velocity_cost": "FingerVel",
+            "eval_near_reward": "NearRew",
+            "eval_mean_fingertip_dist": "TipDist",
+            "eval_turn_contact_count": "ContactN",
+            "eval_turn_contact_gate": "ContactGate",
+            "eval_turn_motion_gate": "MotionGate",
             "eval_goal_cost": "GoalCost",
         }
         self.last_env_metrics = {}
@@ -446,7 +468,12 @@ class PPO:
             ("eval_total_turns", "min_total_turns", ">="),
             ("eval_net_turns", "min_net_turns", ">="),
             ("eval_forward_turn_velocity", "min_forward_velocity", ">="),
+            ("eval_reverse_turn_velocity", "max_reverse_velocity", "<="),
             ("eval_screwdriver_upright_norm", "max_upright", "<="),
+            ("eval_mean_fingertip_dist", "max_mean_fingertip_dist", "<="),
+            ("eval_turn_contact_count", "min_turn_contact_count", ">="),
+            ("eval_turn_contact_gate", "min_turn_contact_gate", ">="),
+            ("eval_turn_motion_gate", "min_turn_motion_gate", ">="),
         )
         for metric_key, rule_key, op in checks:
             target = advance.get(rule_key, None)
@@ -717,6 +744,8 @@ class PPO:
                 self.storage.update_mu_sigma(mu.detach(), sigma.detach())
                 ep_kls.append(kl_dist)
 
+            if not ep_kls:
+                continue
             av_kls = torch.mean(torch.stack(ep_kls))
             self.last_lr = self.scheduler.update(self.last_lr, av_kls.item())
             for param_group in self.optimizer.param_groups:

@@ -13,9 +13,9 @@ Usage:
         --stage 2 --num_envs 8192 --headless \
         --checkpoint outputs/rma/stage1/best.pth
 
-    # Continuous turning teacher policy
+    # Continuous turning teacher policy with HORA-style curriculum
     python scripts/train_rma.py --task Isaac-Allegro-Screwdriver-Continuous-Turning-Direct-v0 \
-        --stage 1 --num_envs 8192 --headless
+        --stage 1 --num_envs 8192 --headless --continuous_curriculum
 
 Requirements:
     conda activate env_isaaclab
@@ -61,10 +61,38 @@ parser.add_argument("--reward_action_weight", type=float, default=None,
                     help="Override action magnitude penalty weight")
 parser.add_argument("--reward_action_rate_weight", type=float, default=None,
                     help="Override action-rate penalty weight")
+parser.add_argument("--reward_tilt_velocity_weight", type=float, default=None,
+                    help="Override x/y screwdriver tilt velocity penalty weight")
+parser.add_argument("--reward_finger_pose_weight", type=float, default=None,
+                    help="Override finger deviation-from-pregrasp penalty weight")
+parser.add_argument("--reward_finger_velocity_weight", type=float, default=None,
+                    help="Override finger joint velocity penalty weight")
 parser.add_argument("--milestone_angle", type=float, default=None,
                     help="Override milestone angle in radians")
 parser.add_argument("--milestone_bonus", type=float, default=None,
                     help="Override milestone bonus")
+parser.add_argument("--near_reward_weight", type=float, default=None,
+                    help="Override dense fingertip near-contact reward weight")
+parser.add_argument("--near_reward_std", type=float, default=None,
+                    help="Override dense fingertip near-contact reward distance scale in meters")
+parser.add_argument("--near_reward_top_k", type=int, default=None,
+                    help="Override number of non-thumb fingertips used by near-contact shaping")
+parser.add_argument("--turn_reward_contact_distance", type=float, default=None,
+                    help="Override fingertip-distance contact proxy for turn reward gating; <=0 disables")
+parser.add_argument("--turn_reward_min_contact_fingers", type=int, default=None,
+                    help="Override minimum fingertip contact-proxy count for turn reward gating")
+parser.add_argument("--turn_reward_min_fingertip_speed", type=float, default=None,
+                    help="Override fingertip speed where motion gate starts opening")
+parser.add_argument("--turn_reward_full_fingertip_speed", type=float, default=None,
+                    help="Override fingertip speed where motion gate reaches 1")
+parser.add_argument("--lost_contact_termination_distance", type=float, default=None,
+                    help="Override contact-proxy termination distance; <=0 disables")
+parser.add_argument("--lost_contact_min_fingers", type=int, default=None,
+                    help="Override minimum contact-proxy fingers before lost-contact termination")
+parser.add_argument("--lost_contact_grace_steps", type=int, default=None,
+                    help="Override policy steps before lost-contact termination can trigger")
+parser.add_argument("--use_mean_action_penalty", action="store_true",
+                    help="Use mean(action**2) instead of sum(action**2) when the env supports it")
 
 # RMA-specific args
 parser.add_argument("--stage", type=int, required=True, choices=[1, 2],
@@ -84,10 +112,10 @@ parser.add_argument("--learning_rate", type=float, default=5e-3,
                     help="PPO learning rate (Stage 1 only)")
 parser.add_argument("--prop_hist_len", type=int, default=30,
                     help="Proprioceptive history length (timesteps)")
-parser.add_argument("--privileged_obs_dim", type=int, default=14,
-                    help="Dimension of privileged observations")
-parser.add_argument("--history_obs_dim", type=int, default=24,
-                    help="Features per history timestep")
+parser.add_argument("--privileged_obs_dim", type=int, default=None,
+                    help="Dimension of privileged observations. Defaults to the task config.")
+parser.add_argument("--history_obs_dim", type=int, default=None,
+                    help="Features per history timestep. Defaults to the task config.")
 
 # Append AppLauncher CLI args (provides --headless, --device, etc.)
 AppLauncher.add_app_launcher_args(parser)
@@ -142,7 +170,13 @@ def _apply_env_overrides(env_cfg):
             "upright_termination_threshold": 0.0,
             "reward_action_weight": 0.05,
             "reward_action_rate_weight": 0.0,
+            "reward_tilt_velocity_weight": 0.0,
+            "reward_finger_pose_weight": 0.0,
+            "reward_finger_velocity_weight": 0.0,
             "milestone_bonus": 0.0,
+            "near_reward_weight": 0.25,
+            "turn_reward_contact_distance": 0.0,
+            "lost_contact_termination_distance": 0.0,
         }
         for name, value in phase1_defaults.items():
             if hasattr(env_cfg, name):
@@ -159,12 +193,29 @@ def _apply_env_overrides(env_cfg):
         "upright_termination_threshold",
         "reward_action_weight",
         "reward_action_rate_weight",
+        "reward_tilt_velocity_weight",
+        "reward_finger_pose_weight",
+        "reward_finger_velocity_weight",
         "milestone_angle",
         "milestone_bonus",
+        "near_reward_weight",
+        "near_reward_std",
+        "near_reward_top_k",
+        "turn_reward_contact_distance",
+        "turn_reward_min_contact_fingers",
+        "turn_reward_min_fingertip_speed",
+        "turn_reward_full_fingertip_speed",
+        "lost_contact_termination_distance",
+        "lost_contact_min_fingers",
+        "lost_contact_grace_steps",
     ):
         value = getattr(args_cli, name)
         if _set_cfg_if_present(env_cfg, name, value):
             overrides[name] = value
+
+    if args_cli.use_mean_action_penalty and hasattr(env_cfg, "use_mean_action_penalty"):
+        env_cfg.use_mean_action_penalty = True
+        overrides["use_mean_action_penalty"] = True
 
     return overrides
 
@@ -179,36 +230,59 @@ def _build_continuous_curriculum_config():
         "save_on_phase_change": True,
         "phases": [
             {
-                "name": "phase1_spin_discovery",
+                "name": "phase1_hora_spin_discovery",
                 "overrides": {
-                    "reward_turn_weight": 1500.0,
-                    "reward_reverse_weight": 2000.0,
+                    # Debug bootstrap: make any useful contact/rotation show up clearly.
+                    "reward_turn_weight": 1000.0,
+                    "reward_reverse_weight": 1000,
                     "turn_velocity_clip": 1.0,
-                    "reward_upright_weight": 5.0,
+                    "reward_upright_weight": 2.0,
+                    "reward_tilt_velocity_weight": 0.0,
                     "upright_termination_threshold": 0.0,
-                    "reward_action_weight": 0.05,
+                    "reward_action_weight": 0.02,
                     "reward_action_rate_weight": 0.0,
+                    "reward_finger_pose_weight": 0.0,
+                    "reward_finger_velocity_weight": 0.0,
                     "milestone_bonus": 0.0,
+                    "near_reward_weight": 2.0,
+                    "near_reward_std": 0.08,
+                    "near_reward_top_k": 3,
+                    "turn_reward_contact_distance": 0.15,
+                    "turn_reward_min_contact_fingers": 1,
+                    "turn_reward_min_fingertip_speed": 0.0,
+                    "turn_reward_full_fingertip_speed": 0.003,
+                    "lost_contact_termination_distance": 0.0,
                 },
                 "advance": {
+                    # Shorten for debugging; restore to 8_000_000 after confirming spin.
                     "min_phase_steps": 8_000_000,
                     "min_episode_length": 45.0,
-                    "min_net_turns": 0.15,
-                    "min_fwd_minus_rev": 0.08,
-                    "max_upright": 2.0,
+                    "min_net_turns": 0.10,
+                    "min_fwd_minus_rev": 0.04,
+                    "max_upright": 2.5,
+                    "max_mean_fingertip_dist": 0.16,
                 },
             },
             {
-                "name": "phase2_directional_stabilization",
+                "name": "phase2_contacted_direction",
                 "overrides": {
                     "reward_turn_weight": 1000.0,
                     "reward_reverse_weight": 1200.0,
                     "turn_velocity_clip": 1.0,
                     "reward_upright_weight": 25.0,
+                    "reward_tilt_velocity_weight": 1.0,
                     "upright_termination_threshold": 0.0,
                     "reward_action_weight": 0.10,
                     "reward_action_rate_weight": 0.02,
+                    "reward_finger_pose_weight": 0.005,
+                    "reward_finger_velocity_weight": 0.0005,
                     "milestone_bonus": 0.05,
+                    "near_reward_weight": 0.15,
+                    "turn_reward_contact_distance": 0.12,
+                    "turn_reward_min_contact_fingers": 1,
+                    "turn_reward_min_fingertip_speed": 0.0,
+                    "turn_reward_full_fingertip_speed": 0.006,
+                    "lost_contact_termination_distance": 0.0,
                 },
                 "advance": {
                     "min_phase_steps": 8_000_000,
@@ -216,19 +290,29 @@ def _build_continuous_curriculum_config():
                     "min_net_turns": 0.15,
                     "min_fwd_minus_rev": 0.06,
                     "max_upright": 1.20,
+                    "max_mean_fingertip_dist": 0.10,
                 },
             },
             {
-                "name": "phase3_upright_recovery",
+                "name": "phase3_stable_contact_turning",
                 "overrides": {
                     "reward_turn_weight": 500.0,
                     "reward_reverse_weight": 700.0,
                     "turn_velocity_clip": 0.75,
                     "reward_upright_weight": 150.0,
+                    "reward_tilt_velocity_weight": 3.0,
                     "upright_termination_threshold": 1.0,
                     "reward_action_weight": 0.15,
                     "reward_action_rate_weight": 0.05,
+                    "reward_finger_pose_weight": 0.01,
+                    "reward_finger_velocity_weight": 0.001,
                     "milestone_bonus": 0.10,
+                    "near_reward_weight": 0.05,
+                    "turn_reward_contact_distance": 0.08,
+                    "turn_reward_min_contact_fingers": 2,
+                    "turn_reward_min_fingertip_speed": 0.003,
+                    "turn_reward_full_fingertip_speed": 0.015,
+                    "lost_contact_termination_distance": 0.0,
                 },
                 "advance": {
                     "min_phase_steps": 8_000_000,
@@ -236,6 +320,7 @@ def _build_continuous_curriculum_config():
                     "min_net_turns": 0.10,
                     "min_fwd_minus_rev": 0.04,
                     "max_upright": 0.70,
+                    "max_mean_fingertip_dist": 0.085,
                 },
             },
             {
@@ -245,10 +330,21 @@ def _build_continuous_curriculum_config():
                     "reward_reverse_weight": 250.0,
                     "turn_velocity_clip": 0.5,
                     "reward_upright_weight": 1000.0,
+                    "reward_tilt_velocity_weight": 5.0,
                     "upright_termination_threshold": 0.5,
                     "reward_action_weight": 0.25,
                     "reward_action_rate_weight": 0.1,
+                    "reward_finger_pose_weight": 0.02,
+                    "reward_finger_velocity_weight": 0.001,
                     "milestone_bonus": 0.25,
+                    "near_reward_weight": 0.0,
+                    "turn_reward_contact_distance": 0.075,
+                    "turn_reward_min_contact_fingers": 2,
+                    "turn_reward_min_fingertip_speed": 0.003,
+                    "turn_reward_full_fingertip_speed": 0.015,
+                    "lost_contact_termination_distance": 0.10,
+                    "lost_contact_min_fingers": 1,
+                    "lost_contact_grace_steps": 5,
                 },
             },
         ],
@@ -274,11 +370,15 @@ def main():
     env_cfg.scene.num_envs = args_cli.num_envs
     env_overrides = _apply_env_overrides(env_cfg)
 
-    # Enable asymmetric (privileged) observations for RMA
+    # Enable asymmetric (privileged) observations for RMA.
+    privileged_obs_dim = (
+        args_cli.privileged_obs_dim if args_cli.privileged_obs_dim is not None else env_cfg.privileged_obs_dim
+    )
+    history_obs_dim = args_cli.history_obs_dim if args_cli.history_obs_dim is not None else env_cfg.history_obs_dim
     env_cfg.asymmetric_obs = True
     env_cfg.prop_hist_len = args_cli.prop_hist_len
-    env_cfg.privileged_obs_dim = args_cli.privileged_obs_dim
-    env_cfg.history_obs_dim = args_cli.history_obs_dim
+    env_cfg.privileged_obs_dim = privileged_obs_dim
+    env_cfg.history_obs_dim = history_obs_dim
 
     # Create the environment via gym with the config object
     env = gym.make(args_cli.task, cfg=env_cfg)
@@ -293,9 +393,9 @@ def main():
     print(f"  Finger DOFs: {num_finger_dofs}")
     print(f"  Obs dim (policy): {obs_shape}")
     print(f"  Action dim: {env.single_action_space.shape}")
-    print(f"  Privileged obs dim: {args_cli.privileged_obs_dim}")
+    print(f"  Privileged obs dim: {privileged_obs_dim}")
     print(f"  History length: {args_cli.prop_hist_len}")
-    print(f"  History obs dim: {args_cli.history_obs_dim}")
+    print(f"  History obs dim: {history_obs_dim}")
     if env_overrides:
         print("  Env overrides:")
         for name, value in sorted(env_overrides.items()):
@@ -349,8 +449,8 @@ def main():
             ppo_config=ppo_config,
             priv_info=True,
             proprio_adapt=False,
-            priv_info_dim=args_cli.privileged_obs_dim,
-            adapt_obs_dim=args_cli.history_obs_dim,
+            priv_info_dim=privileged_obs_dim,
+            adapt_obs_dim=history_obs_dim,
             adapt_history_len=args_cli.prop_hist_len,
         )
 
@@ -377,9 +477,9 @@ def main():
             device=device,
             network_config=network_config,
             ppo_config=ppo_config,
-            priv_info_dim=args_cli.privileged_obs_dim,
+            priv_info_dim=privileged_obs_dim,
             proprio_hist_len=args_cli.prop_hist_len,
-            adapt_obs_dim=args_cli.history_obs_dim,
+            adapt_obs_dim=history_obs_dim,
         )
 
         print(f"Loading Stage 1 checkpoint: {args_cli.checkpoint}")

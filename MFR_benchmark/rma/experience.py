@@ -2,6 +2,8 @@
 # Originally based on RLGames (Denys88, MIT License)
 # Adapted for MFR_benchmark Isaac Lab integration.
 
+import math
+
 import torch
 from torch.utils.data import Dataset
 
@@ -105,16 +107,16 @@ class ExperienceBuffer(Dataset):
             ),
         }
 
-        self.batch_size = batch_size
-        self.minibatch_size = minibatch_size
-        self.length = self.batch_size // self.minibatch_size
+        self.batch_size = int(batch_size)
+        self.minibatch_size = max(1, min(int(minibatch_size), self.batch_size))
+        self.length = max(1, math.ceil(self.batch_size / self.minibatch_size))
 
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
         start = idx * self.minibatch_size
-        end = (idx + 1) * self.minibatch_size
+        end = min((idx + 1) * self.minibatch_size, self.batch_size)
         self.last_range = (start, end)
         input_dict = {}
         for k, v in self.data_dict.items():
