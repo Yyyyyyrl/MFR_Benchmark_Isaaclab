@@ -60,12 +60,18 @@ def _make_continuous_linker_screwdriver_cfg() -> ArticulationCfg:
     tilt.stiffness = 20.0
     tilt.damping = 2.0
 
+    # Model the spin resistance as mostly Coulomb (thread/driving) friction with
+    # a small viscous component, rather than relying on viscous damping. Combined
+    # with the now-explicit screwdriver inertia (see URDF), this gives a
+    # deterministic spin that decays quickly on release instead of free-coasting.
+    # friction/dynamic_friction/viscous_friction are real ActuatorBaseCfg fields
+    # in this Isaac Lab version (verified) and are consumed by the solver.
     rotation = screwdriver_cfg.actuators["rotation"]
     rotation.stiffness = 0.0
-    rotation.damping = 0.06
-    rotation.friction = 0.02
-    rotation.dynamic_friction = 0.02
-    rotation.viscous_friction = 0.02
+    rotation.damping = 0.01
+    rotation.friction = 0.05
+    rotation.dynamic_friction = 0.04
+    rotation.viscous_friction = 0.01
 
     cap = screwdriver_cfg.actuators["cap"]
     cap.stiffness = 50.0
@@ -79,6 +85,9 @@ def _make_continuous_linker_screwdriver_cfg() -> ArticulationCfg:
 def _make_continuous_linker_sim_cfg() -> SimulationCfg:
     sim_cfg = copy.deepcopy(AllegroScrewdriverTurningLinkerHandEnvCfg().sim)
     sim_cfg.physx.gpu_max_rigid_patch_count = 2**22
+    # The base sim bakes render_interval to the base decimation (60). Re-sync it
+    # to the 20 Hz control cadence used by this task so rendered demos are smooth.
+    sim_cfg.render_interval = 3
     return sim_cfg
 
 
@@ -94,6 +103,12 @@ class LinkerHandScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningLink
     action_space = gym.spaces.Box(low=-2.0, high=2.0, shape=(16,), dtype=np.float32)
     observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(19,), dtype=np.float32)
     sim: SimulationCfg = _make_continuous_linker_sim_cfg()
+    # 20 Hz control (override the inherited 1 Hz / decimation=60). Continuous
+    # in-hand turning needs reactive finger motion; physics stays at 60 Hz.
+    # NOTE: gamma in scripts/train_rma.py must move with this (0.9995 @ 20 Hz)
+    # to preserve the effective horizon, and _make_continuous_linker_sim_cfg()
+    # re-syncs render_interval so demos render at the control cadence.
+    decimation = 3
     episode_length_s: float = 60.0
     # The side-grasp reset is already close to the handle. Extra contact-settle
     # steps can preload the passive screwdriver tilt joints, so keep reset vertical.
@@ -131,7 +146,10 @@ class LinkerHandScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningLink
     turn_direction: float = -1.0
     reward_turn_weight: float = 200.0
     turn_velocity_clip: float = 1.0
-    reward_reverse_weight: float = 250.0
+    # Reverse penalty kept at/below the forward turn weight (mild bias). With the
+    # reverse cost now gated on contact, a strong reverse penalty is no longer
+    # needed and previously made freezing the dominant strategy.
+    reward_reverse_weight: float = 220.0
 
     # Softened stability for continuous-turn exploration. Curriculum can tighten.
     reward_upright_weight: float = 200.0
