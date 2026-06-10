@@ -77,7 +77,11 @@ class ContinuousTurningRewardMixin:
         raw_turn_reward = self.cfg.reward_turn_weight * forward_velocity
         turn_gate = self._compute_turn_reward_gate()
         turn_reward = raw_turn_reward * turn_gate
-        reverse_cost = self.cfg.reward_reverse_weight * reverse_velocity
+        # Gate the reverse penalty with the same contact/motion gate as the turn
+        # reward. Otherwise passive off-contact rebound (and the back-off needed
+        # to regrasp) is punished while forward progress is gated off, which makes
+        # "don't move the screwdriver" the safest policy and blocks finger gaiting.
+        reverse_cost = self.cfg.reward_reverse_weight * reverse_velocity * turn_gate
 
         forward_delta = torch.clamp(delta_z, min=0.0)
         self._total_turn += forward_delta.detach()

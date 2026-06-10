@@ -27,7 +27,10 @@ class AllegroScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningEnvCfg)
     reward_turn_weight: float = 200.0
     turn_direction: float = -1.0
     turn_velocity_clip: float = 1.0
-    reward_reverse_weight: float = 250.0
+    # Reverse penalty kept at/below the forward turn weight (mild bias); the
+    # reverse cost is gated on contact in the reward, so a large value is not
+    # needed and otherwise makes freezing the dominant strategy.
+    reward_reverse_weight: float = 220.0
 
     # Mounted-screwdriver analogue of HORA's object linear-motion penalty.
     # The task should spin about z while keeping x/y tilt quiet.
