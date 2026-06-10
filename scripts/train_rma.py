@@ -164,7 +164,7 @@ def _apply_env_overrides(env_cfg):
     if args_cli.continuous_phase1 and not args_cli.continuous_curriculum:
         phase1_defaults = {
             "reward_turn_weight": 1500.0,
-            "reward_reverse_weight": 2000.0,
+            "reward_reverse_weight": 1600.0,
             "turn_velocity_clip": 1.0,
             "reward_upright_weight": 5.0,
             "upright_termination_threshold": 0.0,
@@ -234,7 +234,7 @@ def _build_continuous_curriculum_config():
                 "overrides": {
                     # Debug bootstrap: make any useful contact/rotation show up clearly.
                     "reward_turn_weight": 1000.0,
-                    "reward_reverse_weight": 1500,
+                    "reward_reverse_weight": 1100.0,
                     "turn_velocity_clip": 1.0,
                     "reward_upright_weight": 20,
                     "reward_tilt_velocity_weight": 0.5,
@@ -255,7 +255,7 @@ def _build_continuous_curriculum_config():
                 },
                 "advance": {
                     # Shorten for debugging; restore to 8_000_000 after confirming spin.
-                    "min_phase_steps": 8_000_000,
+                    "min_phase_steps": 160_000_000,
                     "min_episode_length": 45.0,
                     "min_net_turns": 0.10,
                     "min_fwd_minus_rev": 0.04,
@@ -267,7 +267,7 @@ def _build_continuous_curriculum_config():
                 "name": "phase2_contacted_direction",
                 "overrides": {
                     "reward_turn_weight": 1000.0,
-                    "reward_reverse_weight": 1200.0,
+                    "reward_reverse_weight": 1100.0,
                     "turn_velocity_clip": 1.0,
                     "reward_upright_weight": 25.0,
                     "reward_tilt_velocity_weight": 1.0,
@@ -285,7 +285,7 @@ def _build_continuous_curriculum_config():
                     "lost_contact_termination_distance": 0.0,
                 },
                 "advance": {
-                    "min_phase_steps": 8_000_000,
+                    "min_phase_steps": 160_000_000,
                     "min_episode_length": 45.0,
                     "min_net_turns": 0.15,
                     "min_fwd_minus_rev": 0.06,
@@ -297,17 +297,20 @@ def _build_continuous_curriculum_config():
                 "name": "phase3_stable_contact_turning",
                 "overrides": {
                     "reward_turn_weight": 500.0,
-                    "reward_reverse_weight": 700.0,
+                    "reward_reverse_weight": 550.0,
                     "turn_velocity_clip": 0.75,
-                    "reward_upright_weight": 150.0,
-                    "reward_tilt_velocity_weight": 3.0,
+                    # Soften the stability jump (was 150/3.0, a ~6x spike over
+                    # phase2) and keep some discovery shaping + lower action costs
+                    # alive so the policy can still explore vigorous turning here.
+                    "reward_upright_weight": 60.0,
+                    "reward_tilt_velocity_weight": 1.5,
                     "upright_termination_threshold": 1.0,
-                    "reward_action_weight": 0.15,
-                    "reward_action_rate_weight": 0.05,
+                    "reward_action_weight": 0.10,
+                    "reward_action_rate_weight": 0.03,
                     "reward_finger_pose_weight": 0.01,
                     "reward_finger_velocity_weight": 0.001,
                     "milestone_bonus": 0.10,
-                    "near_reward_weight": 0.05,
+                    "near_reward_weight": 0.12,
                     "turn_reward_contact_distance": 0.04,
                     "turn_reward_min_contact_fingers": 2,
                     "turn_reward_min_fingertip_speed": 0.003,
@@ -315,7 +318,7 @@ def _build_continuous_curriculum_config():
                     "lost_contact_termination_distance": 0.0,
                 },
                 "advance": {
-                    "min_phase_steps": 8_000_000,
+                    "min_phase_steps": 160_000_000,
                     "min_episode_length": 45.0,
                     "min_net_turns": 0.10,
                     "min_fwd_minus_rev": 0.04,
@@ -327,7 +330,7 @@ def _build_continuous_curriculum_config():
                 "name": "phase4_strict_continuous_turning",
                 "overrides": {
                     "reward_turn_weight": 200.0,
-                    "reward_reverse_weight": 250.0,
+                    "reward_reverse_weight": 220.0,
                     "turn_velocity_clip": 0.5,
                     "reward_upright_weight": 1000.0,
                     "reward_tilt_velocity_weight": 5.0,
@@ -415,7 +418,9 @@ def main():
         "minibatch_size": args_cli.minibatch_size,
         "mini_epochs": 5,
         "e_clip": 0.2,
-        "gamma": 0.99,
+        # 0.9995 preserves the ~100 s (~2000-step) effective horizon at the 20 Hz
+        # control rate (decimation=3). Move this together with env decimation.
+        "gamma": 0.9995,
         "tau": 0.95,
         "entropy_coef": 0.0,
         "critic_coef": 4.0,
