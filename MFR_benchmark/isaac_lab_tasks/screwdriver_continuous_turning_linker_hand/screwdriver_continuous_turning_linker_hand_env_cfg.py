@@ -18,35 +18,35 @@ from MFR_benchmark.isaac_lab_tasks.screwdriver_turning_linker_hand.screwdriver_t
 
 def _make_continuous_linker_robot_cfg() -> ArticulationCfg:
     robot_cfg = copy.deepcopy(AllegroScrewdriverTurningLinkerHandEnvCfg().robot_cfg)
-    robot_cfg.init_state.pos = (0.15,-0.06, 1.36)
+    robot_cfg.init_state.pos = (0.13,-0.045, 1.36)
     robot_cfg.init_state.rot = (0.5, -0.5, -0.5, 0.5)  # 180 deg around X, then 90 deg around Z
     robot_cfg.init_state.joint_pos.update(
         {
             "index_mcp_roll": 0.0,
             "index_mcp_pitch": 0.55,
-            "index_pip": 1.20,
-            "index_dip": 1.07,
+            "index_pip": 0.9,
+            "index_dip": 0.8,
 
             "middle_mcp_roll": 0.0,
             "middle_mcp_pitch": 0.55,
-            "middle_pip": 1.20,
-            "middle_dip": 1.07,
+            "middle_pip": 0.9,
+            "middle_dip": 0.8,
 
             "ring_mcp_roll": 0.0,
             "ring_mcp_pitch": 0.55,
-            "ring_pip": 1.20,
-            "ring_dip": 1.07,
+            "ring_pip": 0.9,
+            "ring_dip": 0.8,
 
             "pinky_mcp_roll": 0.0,
             "pinky_mcp_pitch": 0.55,
-            "pinky_pip": 1.20,
-            "pinky_dip": 1.07,
+            "pinky_pip": 0.9,
+            "pinky_dip": 0.8,
 
-            "thumb_cmc_yaw": 0.5,
-            "thumb_cmc_roll": 1.2,
-            "thumb_cmc_pitch": 0.5,
-            "thumb_mcp": 0.6,
-            "thumb_ip": 0.6,
+            "thumb_cmc_yaw": 0.24,
+            "thumb_cmc_roll": 0.6,
+            "thumb_cmc_pitch": 0.62,
+            "thumb_mcp": 0.65,
+            "thumb_ip": 0.58,
         }
     )
     return robot_cfg
@@ -62,10 +62,10 @@ def _make_continuous_linker_screwdriver_cfg() -> ArticulationCfg:
 
     rotation = screwdriver_cfg.actuators["rotation"]
     rotation.stiffness = 0.0
-    rotation.damping = 0.01
-    rotation.friction = 0.0
-    rotation.dynamic_friction = 0.0
-    rotation.viscous_friction = 0.0
+    rotation.damping = 0.06
+    rotation.friction = 0.02
+    rotation.dynamic_friction = 0.02
+    rotation.viscous_friction = 0.02
 
     cap = screwdriver_cfg.actuators["cap"]
     cap.stiffness = 50.0
@@ -78,7 +78,7 @@ def _make_continuous_linker_screwdriver_cfg() -> ArticulationCfg:
 
 def _make_continuous_linker_sim_cfg() -> SimulationCfg:
     sim_cfg = copy.deepcopy(AllegroScrewdriverTurningLinkerHandEnvCfg().sim)
-    sim_cfg.physx.gpu_max_rigid_patch_count = 2**20
+    sim_cfg.physx.gpu_max_rigid_patch_count = 2**22
     return sim_cfg
 
 
@@ -106,7 +106,7 @@ class LinkerHandScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningLink
             "middle": (0.0, 0.55, 0.9),
             "ring": (0.0, 0.55, 0.9),
             "pinky": (0.0, 0.55, 0.9),
-            "thumb": (0.35, 0.9, 0.6, 0.7)
+            "thumb": (0.24, 0.6, 0.62, 0.65),
         }
     )
 
@@ -150,12 +150,12 @@ class LinkerHandScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningLink
     # Dense discovery shaping. This uses body positions only; no contact sensors.
     near_reward_weight: float = 0.2
     near_reward_std: float = 0.03
-    near_reward_top_k: int = 2
+    near_reward_top_k: int = 3
 
     # Gate turn reward so a flicked screwdriver cannot score while coasting past
     # a stationary hand. Distances are measured to the nearest screwdriver link.
     turn_reward_contact_distance: float = 0.075
-    turn_reward_min_contact_fingers: int = 2
+    turn_reward_min_contact_fingers: int = 3
     turn_reward_min_fingertip_speed: float = 0.003
     turn_reward_full_fingertip_speed: float = 0.015
 

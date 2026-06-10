@@ -191,23 +191,11 @@ class LinkerHandScrewdriverContinuousTurningEnv(ContinuousTurningRewardMixin, Li
         if near.shape[1] == 0:
             return torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
 
-        non_thumb_score = None
-        if self._non_thumb_tip_indices:
-            non_thumb_near = near[:, self._non_thumb_tip_indices]
-            k = max(1, min(int(self.cfg.near_reward_top_k), non_thumb_near.shape[1]))
-            non_thumb_score = torch.topk(non_thumb_near, k=k, dim=-1).values.mean(dim=-1)
-
-        thumb_score = None
-        if self._thumb_tip_index is not None:
-            thumb_score = near[:, self._thumb_tip_index]
-
-        if thumb_score is not None and non_thumb_score is not None:
-            return 0.5 * (thumb_score + non_thumb_score)
-        if thumb_score is not None:
-            return thumb_score
-        if non_thumb_score is not None:
-            return non_thumb_score
-        return torch.mean(near, dim=-1)
+        if near.shape[1] == 0:
+            return torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        
+        k = max(1, min(int(self.cfg.near_reward_top_k), near.shape[1]))
+        return torch.topk(near, k=k, dim=-1).values.mean(dim=-1)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         terminated, timed_out = super()._get_dones()

@@ -81,7 +81,7 @@ class AllegroScrewdriverTurningLinkerHandEnvCfg(DirectRLEnvCfg):
             replace_cylinders_with_capsules=True,
             make_instanceable=False,
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=True,
+                enabled_self_collisions=False,
                 solver_position_iteration_count=8,
                 solver_velocity_iteration_count=0,
             ),
