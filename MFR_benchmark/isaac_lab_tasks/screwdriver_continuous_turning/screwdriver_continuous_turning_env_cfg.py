@@ -46,6 +46,22 @@ class AllegroScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningEnvCfg)
     reward_tilt_velocity_weight: float = 5.0
     upright_termination_threshold: float = 1.0
 
+    # Multiplicative uprightness gate on the turn/milestone reward:
+    # gate = exp(-(tilt_norm / std)**2). Tilting directly shrinks the dominant
+    # reward term instead of racing it via an additive penalty, which a strong
+    # turn reward always wins (tilt-and-scrape exploit). <= 0 disables.
+    turn_upright_gate_std: float = 0.25
+
+    # Measure spin as the screwdriver-stick quaternion delta projected on the
+    # shaft axis (HORA-style). The raw Euler-z gimbal coordinate also counts
+    # precession of a tilted shaft, rewarding wobble instead of true spin.
+    use_shaft_spin_measure: bool = True
+
+    # Contact proxy as fingertip distance to the handle axis segment instead of
+    # body-origin distances. Thresholds become physically meaningful: handle
+    # radius is 0.02 m, so tip-origin axis distance at pad contact is ~0.03 m.
+    use_axis_contact_proxy: bool = True
+
     # HORA-like policy regularization. Action cost uses sum(action**2) for the
     # 12-DOF Allegro setup; action-rate and finger velocity are mean penalties.
     reward_action_weight: float = 0.25

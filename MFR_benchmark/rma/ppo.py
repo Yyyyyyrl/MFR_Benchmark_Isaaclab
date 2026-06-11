@@ -250,6 +250,7 @@ class PPO:
                     "eval_turn_contact_count",
                     "eval_turn_contact_gate",
                     "eval_turn_motion_gate",
+                    "eval_turn_upright_gate",
                     "eval_goal_cost",
                 ),
             )
@@ -274,6 +275,7 @@ class PPO:
             "eval_turn_contact_count": "ContactN",
             "eval_turn_contact_gate": "ContactGate",
             "eval_turn_motion_gate": "MotionGate",
+            "eval_turn_upright_gate": "UprightGate",
             "eval_goal_cost": "GoalCost",
         }
         self.last_env_metrics = {}
@@ -474,6 +476,7 @@ class PPO:
             ("eval_turn_contact_count", "min_turn_contact_count", ">="),
             ("eval_turn_contact_gate", "min_turn_contact_gate", ">="),
             ("eval_turn_motion_gate", "min_turn_motion_gate", ">="),
+            ("eval_turn_upright_gate", "min_turn_upright_gate", ">="),
         )
         for metric_key, rule_key, op in checks:
             target = advance.get(rule_key, None)

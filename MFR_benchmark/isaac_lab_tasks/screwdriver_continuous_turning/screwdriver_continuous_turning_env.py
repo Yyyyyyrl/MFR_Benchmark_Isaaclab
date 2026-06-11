@@ -7,6 +7,8 @@ from typing import Any
 
 import torch
 
+import isaaclab.utils.math as math_utils
+
 from MFR_benchmark.isaac_lab_tasks.screwdriver_turning.screwdriver_turning_env import (
     AllegroScrewdriverTurningEnv,
 )
@@ -33,6 +35,7 @@ class ContinuousTurningRewardMixin:
         self._net_turn = None
         self._prev_actions = None
         self._prev_milestone_count = None
+        self._prev_shaft_quat = None
         self._policy_dt = float(cfg.decimation) * float(cfg.sim.dt)
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -67,26 +70,45 @@ class ContinuousTurningRewardMixin:
 
         raw_delta_z = self.cfg.turn_direction * (z_curr - self._prev_z)
         # Robust to revolute-coordinate wrapping while still working for unbounded z.
-        delta_z = torch.atan2(torch.sin(raw_delta_z), torch.cos(raw_delta_z))
+        euler_delta_z = torch.atan2(torch.sin(raw_delta_z), torch.cos(raw_delta_z))
         self._prev_z = z_curr.detach().clone()
+
+        # Prefer true spin about the shaft axis when available: the Euler-z
+        # gimbal coordinate also moves under precession of a tilted shaft, so
+        # using it as the reward lets wobble-scraping count as turning.
+        shaft_delta_z = None
+        if bool(getattr(self.cfg, "use_shaft_spin_measure", False)):
+            shaft_delta_z = self._compute_shaft_spin_delta()
+        delta_z = shaft_delta_z if shaft_delta_z is not None else euler_delta_z
 
         turn_velocity = delta_z / self._policy_dt
         forward_velocity = torch.clamp(turn_velocity, min=0.0, max=self.cfg.turn_velocity_clip)
         reverse_velocity = torch.clamp(-turn_velocity, min=0.0, max=self.cfg.turn_velocity_clip)
 
+        upright_norm = torch.linalg.norm(obj_orientation[:, :-1], dim=-1)
+        gate_std = float(getattr(self.cfg, "turn_upright_gate_std", 0.0))
+        if gate_std > 0.0:
+            upright_gate = torch.exp(-((upright_norm / gate_std) ** 2))
+        else:
+            upright_gate = torch.ones_like(upright_norm)
+
         raw_turn_reward = self.cfg.reward_turn_weight * forward_velocity
         turn_gate = self._compute_turn_reward_gate()
-        turn_reward = raw_turn_reward * turn_gate
+        # The upright gate multiplies the dominant positive term so tilting
+        # directly forfeits turn reward instead of racing an additive penalty.
+        turn_reward = raw_turn_reward * turn_gate * upright_gate
         # Gate the reverse penalty with the same contact/motion gate as the turn
         # reward. Otherwise passive off-contact rebound (and the back-off needed
         # to regrasp) is punished while forward progress is gated off, which makes
         # "don't move the screwdriver" the safest policy and blocks finger gaiting.
+        # The upright gate is intentionally NOT applied here: when tilted, forward
+        # spin earns nothing while reversing still costs, biasing toward recovery.
         reverse_cost = self.cfg.reward_reverse_weight * reverse_velocity * turn_gate
 
         forward_delta = torch.clamp(delta_z, min=0.0)
         self._total_turn += forward_delta.detach()
         self._net_turn += delta_z.detach()
-        milestone_reward = self._compute_milestone_reward(gate=self._compute_milestone_reward_gate())
+        milestone_reward = self._compute_milestone_reward(gate=turn_gate * upright_gate)
 
         tilt_xy = obj_orientation[:, :2]
         tilt_velocity = (tilt_xy - self._prev_tilt_xy) / self._policy_dt
@@ -129,12 +151,14 @@ class ContinuousTurningRewardMixin:
         legacy_goal_error = obj_orientation - self._goal_euler
         self.extras["eval_screwdriver_euler"] = obj_orientation.detach().clone()
         self.extras["eval_screwdriver_goal_error"] = legacy_goal_error.detach().clone()
-        self.extras["eval_screwdriver_upright_norm"] = torch.linalg.norm(obj_orientation[:, :-1], dim=-1).detach()
+        self.extras["eval_screwdriver_upright_norm"] = upright_norm.detach()
         self.extras["eval_screwdriver_tilt_velocity"] = torch.linalg.vector_norm(
             tilt_velocity, ord=1, dim=-1
         ).detach()
         self.extras["eval_turn_delta"] = delta_z.detach()
         self.extras["eval_raw_turn_delta"] = raw_delta_z.detach()
+        self.extras["eval_euler_turn_delta"] = euler_delta_z.detach()
+        self.extras["eval_turn_upright_gate"] = upright_gate.detach()
         self.extras["eval_turn_velocity"] = turn_velocity.detach()
         self.extras["eval_forward_turn_velocity"] = forward_velocity.detach()
         self.extras["eval_reverse_turn_velocity"] = reverse_velocity.detach()
@@ -197,6 +221,45 @@ class ContinuousTurningRewardMixin:
             self._net_turn[env_ids] = 0.0
         if self._prev_milestone_count is not None:
             self._prev_milestone_count[env_ids] = 0.0
+        if self._prev_shaft_quat is not None:
+            shaft_quat = self._get_shaft_quat()
+            if shaft_quat is not None:
+                self._prev_shaft_quat[env_ids] = shaft_quat[env_ids].detach().clone()
+
+    def _get_shaft_quat(self) -> torch.Tensor | None:
+        """World-frame quaternion (wxyz) of the screwdriver shaft body.
+
+        Returns None when the env does not expose a shaft body; the reward then
+        falls back to the Euler-z gimbal delta.
+        """
+        return None
+
+    def _compute_shaft_spin_delta(self) -> torch.Tensor | None:
+        """Signed per-step rotation about the screwdriver's own shaft axis.
+
+        HORA-style measurement: delta-quaternion between policy steps converted
+        to axis-angle and projected onto the current shaft axis, so precession
+        of a tilted shaft does not count as turning progress.
+        """
+        shaft_quat = self._get_shaft_quat()
+        if shaft_quat is None:
+            return None
+        if self._prev_shaft_quat is None:
+            self._prev_shaft_quat = shaft_quat.detach().clone()
+            return torch.zeros(shaft_quat.shape[0], dtype=torch.float32, device=shaft_quat.device)
+
+        delta_quat = math_utils.quat_mul(shaft_quat, math_utils.quat_conjugate(self._prev_shaft_quat))
+        # Resolve quaternion double cover so small rotations stay small.
+        delta_quat = torch.where(delta_quat[:, 0:1] < 0.0, -delta_quat, delta_quat)
+        axis_angle = math_utils.axis_angle_from_quat(delta_quat)
+
+        shaft_axis = torch.zeros_like(shaft_quat[:, :3])
+        shaft_axis[:, 2] = 1.0
+        shaft_axis = math_utils.quat_apply(shaft_quat, shaft_axis)
+
+        spin = torch.sum(axis_angle * shaft_axis, dim=-1)
+        self._prev_shaft_quat = shaft_quat.detach().clone()
+        return self.cfg.turn_direction * spin
 
     def _compute_milestone_reward(self, gate: torch.Tensor | None = None) -> torch.Tensor:
         if self.cfg.milestone_angle <= 0.0 or self.cfg.milestone_bonus <= 0.0:
@@ -218,9 +281,6 @@ class ContinuousTurningRewardMixin:
 
     def _compute_turn_reward_gate(self) -> torch.Tensor:
         return torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
-
-    def _compute_milestone_reward_gate(self) -> torch.Tensor | None:
-        return None
 
     def _compute_continuous_auxiliary_terms(self) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         zeros = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
@@ -248,8 +308,19 @@ class AllegroScrewdriverContinuousTurningEnv(ContinuousTurningRewardMixin, Alleg
         super().__init__(cfg, render_mode, **kwargs)
         self._fingertip_body_ids = self._resolve_fingertip_bodies()
         self._screwdriver_near_body_ids = self._resolve_screwdriver_near_bodies()
+        # SCREWDRIVER_NEAR_BODY_NAMES order: (stick, body/handle, cap).
+        self._shaft_body_id = self._screwdriver_near_body_ids[0]
+        self._handle_body_id = self._screwdriver_near_body_ids[1]
+        self._cap_body_id = self._screwdriver_near_body_ids[2]
         self._thumb_tip_index = self.fingers.index("thumb") if "thumb" in self.fingers else None
         self._non_thumb_tip_indices = [idx for idx, finger in enumerate(self.fingers) if finger != "thumb"]
+
+    def _get_shaft_quat(self) -> torch.Tensor | None:
+        if not bool(getattr(self.cfg, "use_shaft_spin_measure", False)):
+            return None
+        if not self._screwdriver_near_body_ids:
+            return None
+        return self.screwdriver.data.body_state_w[:, self._shaft_body_id, 3:7]
 
     def _resolve_fingertip_bodies(self) -> list[int]:
         body_ids = []
@@ -283,10 +354,31 @@ class AllegroScrewdriverContinuousTurningEnv(ContinuousTurningRewardMixin, Alleg
     def _compute_fingertip_screwdriver_distances(self) -> torch.Tensor:
         if not self._fingertip_body_ids or not self._screwdriver_near_body_ids:
             return torch.empty((self.num_envs, 0), dtype=torch.float32, device=self.device)
+        if bool(getattr(self.cfg, "use_axis_contact_proxy", False)):
+            return self._compute_fingertip_axis_distances()
         fingertip_pos = self.allegro.data.body_state_w[:, self._fingertip_body_ids, :3]
         screwdriver_pos = self.screwdriver.data.body_state_w[:, self._screwdriver_near_body_ids, :3]
         tip_to_screwdriver = fingertip_pos.unsqueeze(2) - screwdriver_pos.unsqueeze(1)
         return torch.linalg.norm(tip_to_screwdriver, dim=-1).min(dim=-1).values
+
+    def _compute_fingertip_axis_distances(self) -> torch.Tensor:
+        """Fingertip distance to the handle axis segment (handle origin -> cap origin).
+
+        Unlike body-origin distances, this is physically interpretable: the
+        handle radius is 0.02 m, so a fingertip pad touching the handle sits at
+        roughly 0.03 m axis distance regardless of grip height.
+        """
+        fingertip_pos = self.allegro.data.body_state_w[:, self._fingertip_body_ids, :3]
+        handle_base = self.screwdriver.data.body_state_w[:, self._handle_body_id, :3]
+        handle_top = self.screwdriver.data.body_state_w[:, self._cap_body_id, :3]
+
+        axis = handle_top - handle_base
+        axis_len_sq = torch.sum(axis**2, dim=-1, keepdim=True).clamp_min(1.0e-9)
+        rel = fingertip_pos - handle_base.unsqueeze(1)
+        t = torch.sum(rel * axis.unsqueeze(1), dim=-1, keepdim=True) / axis_len_sq.unsqueeze(1)
+        t = t.clamp(0.0, 1.0)
+        closest = handle_base.unsqueeze(1) + t * axis.unsqueeze(1)
+        return torch.linalg.norm(fingertip_pos - closest, dim=-1)
 
     def _compute_fingertip_speeds(self) -> torch.Tensor:
         if not self._fingertip_body_ids:
@@ -332,9 +424,6 @@ class AllegroScrewdriverContinuousTurningEnv(ContinuousTurningRewardMixin, Alleg
         self.extras["eval_turn_contact_gate"] = contact_gate.detach()
         self.extras["eval_turn_motion_gate"] = motion_gate.detach()
         return gate
-
-    def _compute_milestone_reward_gate(self) -> torch.Tensor | None:
-        return self._compute_turn_reward_gate()
 
     def _compute_continuous_auxiliary_terms(self) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         zeros = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
