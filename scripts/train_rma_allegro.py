@@ -88,6 +88,8 @@ parser.add_argument("--near_reward_std", type=float, default=None,
                     help="Override dense fingertip near-contact reward distance scale in meters")
 parser.add_argument("--near_reward_top_k", type=int, default=None,
                     help="Override number of non-thumb fingertips used by near-contact shaping")
+parser.add_argument("--contact_bonus_weight", type=float, default=None,
+                    help="Override flat per-step bonus for fingertips within the contact-gate distance")
 parser.add_argument("--turn_reward_contact_distance", type=float, default=None,
                     help="Override fingertip-distance contact proxy for turn reward gating; <=0 disables")
 parser.add_argument("--turn_reward_min_contact_fingers", type=int, default=None,
@@ -177,11 +179,11 @@ def _apply_env_overrides(env_cfg):
     if args_cli.continuous_phase1 and not args_cli.continuous_curriculum:
         phase1_defaults = {
             "reward_turn_weight": 1500.0,
-            "reward_reverse_weight": 1600.0,
+            "reward_reverse_weight": 400.0,
             "turn_velocity_clip": 1.0,
-            "turn_upright_gate_std": 0.30,
+            "turn_upright_gate_std": 0.45,
             "reward_upright_weight": 50.0,
-            "upright_termination_threshold": 0.8,
+            "upright_termination_threshold": 0.6,
             "reward_action_weight": 0.05,
             "reward_action_rate_weight": 0.0,
             "reward_tilt_velocity_weight": 0.0,
@@ -216,6 +218,7 @@ def _apply_env_overrides(env_cfg):
         "near_reward_weight",
         "near_reward_std",
         "near_reward_top_k",
+        "contact_bonus_weight",
         "turn_reward_contact_distance",
         "turn_reward_min_contact_fingers",
         "turn_reward_min_fingertip_speed",
@@ -259,18 +262,24 @@ def _build_continuous_curriculum_config():
                 "name": "phase1_upright_spin_discovery",
                 "overrides": {
                     "reward_turn_weight": 1000.0,
-                    "reward_reverse_weight": 1100.0,
+                    # Must sit well below the tilt-discounted forward weight or
+                    # contact has negative expected value and the policy learns
+                    # to open the fingers and never touch (allegro-action-v2
+                    # failure: ContactGate 0.09 -> 0.000 by 57M steps).
+                    "reward_reverse_weight": 250.0,
                     "turn_velocity_clip": 1.0,
-                    "turn_upright_gate_std": 0.30,
+                    # Loose gate + tighter termination shrink the dead zone
+                    # where tilt suppresses all reward but does not reset.
+                    "turn_upright_gate_std": 0.45,
                     "reward_upright_weight": 50.0,
                     "reward_tilt_velocity_weight": 0.5,
-                    "upright_termination_threshold": 0.8,
+                    "upright_termination_threshold": 0.6,
                     "reward_action_weight": 0.03,
                     "reward_action_rate_weight": 0.06,
                     "reward_finger_pose_weight": 0.002,
                     "reward_finger_velocity_weight": 0.0002,
                     "milestone_bonus": 0.0,
-                    "near_reward_weight": 0.8,
+                    "near_reward_weight": 1.2,
                     "near_reward_std": 0.12,
                     "near_reward_top_k": 3,
                     "turn_reward_contact_distance": 0.06,
@@ -297,10 +306,10 @@ def _build_continuous_curriculum_config():
                     "reward_turn_weight": 1000.0,
                     "reward_reverse_weight": 500.0,
                     "turn_velocity_clip": 1.0,
-                    "turn_upright_gate_std": 0.25,
+                    "turn_upright_gate_std": 0.30,
                     "reward_upright_weight": 100.0,
                     "reward_tilt_velocity_weight": 1.0,
-                    "upright_termination_threshold": 0.6,
+                    "upright_termination_threshold": 0.5,
                     "reward_action_weight": 0.10,
                     "reward_action_rate_weight": 0.06,
                     "reward_finger_pose_weight": 0.005,
@@ -333,7 +342,7 @@ def _build_continuous_curriculum_config():
                     "turn_upright_gate_std": 0.20,
                     "reward_upright_weight": 200.0,
                     "reward_tilt_velocity_weight": 1.5,
-                    "upright_termination_threshold": 0.5,
+                    "upright_termination_threshold": 0.45,
                     "reward_action_weight": 0.10,
                     "reward_action_rate_weight": 0.06,
                     "reward_finger_pose_weight": 0.01,

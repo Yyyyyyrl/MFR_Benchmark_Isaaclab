@@ -97,13 +97,12 @@ class ContinuousTurningRewardMixin:
         # The upright gate multiplies the dominant positive term so tilting
         # directly forfeits turn reward instead of racing an additive penalty.
         turn_reward = raw_turn_reward * turn_gate * upright_gate
-        # Gate the reverse penalty with the same contact/motion gate as the turn
-        # reward. Otherwise passive off-contact rebound (and the back-off needed
-        # to regrasp) is punished while forward progress is gated off, which makes
-        # "don't move the screwdriver" the safest policy and blocks finger gaiting.
-        # The upright gate is intentionally NOT applied here: when tilted, forward
-        # spin earns nothing while reversing still costs, biasing toward recovery.
-        reverse_cost = self.cfg.reward_reverse_weight * reverse_velocity * turn_gate
+        # The reverse penalty must carry the SAME gates as the turn reward.
+        # Gating only one side makes the expected value of contact negative
+        # (forward discounted by tilt while reverse stays fully priced), and the
+        # learned optimum becomes "open the fingers and never touch" — observed
+        # as fingers expanding outward with the contact gate collapsing to 0.
+        reverse_cost = self.cfg.reward_reverse_weight * reverse_velocity * turn_gate * upright_gate
 
         forward_delta = torch.clamp(delta_z, min=0.0)
         self._total_turn += forward_delta.detach()
@@ -438,8 +437,17 @@ class AllegroScrewdriverContinuousTurningEnv(ContinuousTurningRewardMixin, Alleg
         near = torch.exp(-tip_dist / max(float(self.cfg.near_reward_std), 1.0e-6))
         near_score = self._compute_near_score(near)
         near_reward = self.cfg.near_reward_weight * near_score
-        return near_reward, zeros, {
+
+        contact_bonus = zeros
+        bonus_weight = float(getattr(self.cfg, "contact_bonus_weight", 0.0))
+        contact_threshold = float(getattr(self.cfg, "turn_reward_contact_distance", 0.0))
+        if bonus_weight > 0.0 and contact_threshold > 0.0:
+            contact_mask = tip_dist <= contact_threshold
+            contact_bonus = bonus_weight * contact_mask.float().mean(dim=-1)
+
+        return near_reward + contact_bonus, zeros, {
             "eval_near_reward": near_reward,
+            "eval_contact_bonus": contact_bonus,
             "eval_near_score": near_score,
             "eval_mean_fingertip_dist": torch.mean(tip_dist, dim=-1),
             "eval_min_fingertip_dist": torch.min(tip_dist, dim=-1).values,

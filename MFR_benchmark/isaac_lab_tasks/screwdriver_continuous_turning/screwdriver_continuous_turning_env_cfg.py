@@ -79,6 +79,11 @@ class AllegroScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningEnvCfg)
     near_reward_std: float = 0.03
     near_reward_top_k: int = 2
 
+    # Flat per-step bonus * (fingertips within turn_reward_contact_distance / num
+    # fingers). Makes "hold the handle" the safe attractor when tilt costs and
+    # termination would otherwise push the policy to disengage entirely.
+    contact_bonus_weight: float = 0.0
+
     # Gate spin rewards so a flicked screwdriver cannot coast for reward after
     # the fingertips leave or stop moving. Set distance <= 0 to disable.
     turn_reward_contact_distance: float = 0.075
