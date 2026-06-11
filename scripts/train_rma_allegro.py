@@ -4,11 +4,11 @@
 Allegro-specific variant of train_rma_linker.py.  Key differences:
   - Default task: Isaac-Allegro-Screwdriver-Continuous-Turning-Direct-v0
   - gamma=0.999 and horizon_length=32 (tuned for decimation=6, 600-step episodes)
-  - Phase 1 curriculum widened contact gate (0.12 m / 2 fingers) so turn reward
-    is visible from the pregrasp position (TipDist≈0.119 m).
-  - Phase 1 reverse penalty reduced (300 vs 1100) to keep the net spin signal
-    positive despite the initial backward contact bias from the pregrasp pose.
-  - Phase 1 upright weight lowered (5 vs 20) so the spin signal dominates.
+  - Anti tilt-and-scrape curriculum: the turn reward is multiplicatively gated
+    by uprightness (turn_upright_gate_std) and upright termination is active
+    from phase 1, so jamming the tilted handle never out-earns clean turning.
+  - Contact gating uses the fingertip-to-handle-axis distance proxy
+    (use_axis_contact_proxy) with physically calibrated thresholds.
   - Near-reward Gaussian widened (std=0.12 vs 0.06) for stronger approach gradient.
   - All-phase min_episode_length scaled to 540 (90 % of 600-step episodes).
 
@@ -66,6 +66,8 @@ parser.add_argument("--reward_upright_weight", type=float, default=None,
                     help="Override screwdriver upright penalty weight")
 parser.add_argument("--upright_termination_threshold", type=float, default=None,
                     help="Override upright termination threshold; <=0 disables it")
+parser.add_argument("--turn_upright_gate_std", type=float, default=None,
+                    help="Override multiplicative upright gate std in radians; <=0 disables")
 parser.add_argument("--reward_action_weight", type=float, default=None,
                     help="Override action magnitude penalty weight")
 parser.add_argument("--reward_action_rate_weight", type=float, default=None,
@@ -177,8 +179,9 @@ def _apply_env_overrides(env_cfg):
             "reward_turn_weight": 1500.0,
             "reward_reverse_weight": 1600.0,
             "turn_velocity_clip": 1.0,
-            "reward_upright_weight": 5.0,
-            "upright_termination_threshold": 0.0,
+            "turn_upright_gate_std": 0.30,
+            "reward_upright_weight": 50.0,
+            "upright_termination_threshold": 0.8,
             "reward_action_weight": 0.05,
             "reward_action_rate_weight": 0.0,
             "reward_tilt_velocity_weight": 0.0,
@@ -202,6 +205,7 @@ def _apply_env_overrides(env_cfg):
         "reward_reverse_weight",
         "reward_upright_weight",
         "upright_termination_threshold",
+        "turn_upright_gate_std",
         "reward_action_weight",
         "reward_action_rate_weight",
         "reward_tilt_velocity_weight",
@@ -235,28 +239,32 @@ def _build_continuous_curriculum_config():
     if not args_cli.continuous_curriculum:
         return {"enabled": False}
 
+    # Reward-balance notes (from the tilt-and-scrape failure analysis):
+    #   - The turn reward is multiplicatively gated by uprightness
+    #     (turn_upright_gate_std) in every phase, so tilting forfeits the
+    #     dominant reward instead of racing a small additive penalty.
+    #   - Upright termination is active from phase 1 (HORA's drop-termination
+    #     analogue for a mounted screwdriver); thresholds tighten per phase.
+    #   - Contact distances refer to the fingertip-to-handle-axis proxy
+    #     (use_axis_contact_proxy): handle radius 0.02 m, pad contact ~0.03 m.
+    #     Each step-down must stay inside the previous phase's converged
+    #     distances to avoid the gate-collapse reward cliff seen at the old
+    #     phase-3 transition (0.07 -> 0.04 body-origin gate went 1.0 -> 0.001).
     return {
         "enabled": True,
         "reset_best_on_phase_change": True,
         "save_on_phase_change": True,
         "phases": [
             {
-                "name": "phase1_hora_spin_discovery",
+                "name": "phase1_upright_spin_discovery",
                 "overrides": {
-                    # Contact gate widened so pregrasp fingertips (TipDist≈0.119 m)
-                    # open the gate from step 0 (≈57 % open vs 8.7 % with 0.08/3).
-                    # Reverse weight kept well below turn_weight (300 < 1000) because
-                    # the pregrasp produces a 15 % backward contact bias.  Break-even
-                    # is reverse_weight < 866; using 300 gives +21.6/step net signal.
-                    # upright_weight=12 keeps the screwdriver from tilting into the
-                    # tilt-exploitation regime (5 was too low — 30-45° tilt observed).
-                    # action_rate_weight=0.06 mildly penalises finger oscillation.
                     "reward_turn_weight": 1000.0,
-                    "reward_reverse_weight": 300.0,
+                    "reward_reverse_weight": 1100.0,
                     "turn_velocity_clip": 1.0,
-                    "reward_upright_weight": 12.0,
+                    "turn_upright_gate_std": 0.30,
+                    "reward_upright_weight": 50.0,
                     "reward_tilt_velocity_weight": 0.5,
-                    "upright_termination_threshold": 0.0,
+                    "upright_termination_threshold": 0.8,
                     "reward_action_weight": 0.03,
                     "reward_action_rate_weight": 0.06,
                     "reward_finger_pose_weight": 0.002,
@@ -265,57 +273,55 @@ def _build_continuous_curriculum_config():
                     "near_reward_weight": 0.8,
                     "near_reward_std": 0.12,
                     "near_reward_top_k": 3,
-                    "turn_reward_contact_distance": 0.12,
+                    "turn_reward_contact_distance": 0.06,
                     "turn_reward_min_contact_fingers": 2,
                     "turn_reward_min_fingertip_speed": 0.0,
                     "turn_reward_full_fingertip_speed": 0.003,
                     "lost_contact_termination_distance": 0.0,
                 },
                 "advance": {
-                    "min_phase_steps": 160_000_000,
-                    # 540 = 90 % of the 600-step episode (decimation=6).  The
-                    # linker script used 45.0, which was 75 % of its 60-step
-                    # episodes; scaling proportionally gives the same intent.
+                    "min_phase_steps": 120_000_000,
+                    # 540 = 90 % of the 600-step episode (decimation=6). With
+                    # upright termination active this now also certifies the
+                    # policy keeps the screwdriver vertical for the episode.
                     "min_episode_length": 540,
                     "min_net_turns": 0.10,
                     "min_fwd_minus_rev": 0.04,
-                    "max_upright": 2.5,
-                    "max_mean_fingertip_dist": 0.16,
+                    "max_upright": 0.35,
+                    "max_mean_fingertip_dist": 0.08,
                 },
             },
             {
                 "name": "phase2_contacted_direction",
                 "overrides": {
                     "reward_turn_weight": 1000.0,
-                    # 500 keeps the net spin signal positive after gate tightens to
-                    # 0.09 m / 2 fingers (~35 % open at Phase 2 entry vs 5 % with the
-                    # original 0.06/3).  Break-even with 35 % gate ≈ reverse_weight 866.
                     "reward_reverse_weight": 500.0,
                     "turn_velocity_clip": 1.0,
-                    "reward_upright_weight": 25.0,
+                    "turn_upright_gate_std": 0.25,
+                    "reward_upright_weight": 100.0,
                     "reward_tilt_velocity_weight": 1.0,
-                    "upright_termination_threshold": 0.0,
+                    "upright_termination_threshold": 0.6,
                     "reward_action_weight": 0.10,
                     "reward_action_rate_weight": 0.06,
                     "reward_finger_pose_weight": 0.005,
                     "reward_finger_velocity_weight": 0.0005,
                     "milestone_bonus": 0.05,
                     "near_reward_weight": 0.15,
-                    # Gentler gate step-down: 0.12→0.09 (was 0.12→0.06) and keep 2
-                    # fingers minimum to avoid instantly gating to near-zero.
-                    "turn_reward_contact_distance": 0.09,
+                    "near_reward_std": 0.12,
+                    "near_reward_top_k": 3,
+                    "turn_reward_contact_distance": 0.045,
                     "turn_reward_min_contact_fingers": 2,
                     "turn_reward_min_fingertip_speed": 0.0,
                     "turn_reward_full_fingertip_speed": 0.006,
                     "lost_contact_termination_distance": 0.0,
                 },
                 "advance": {
-                    "min_phase_steps": 160_000_000,
+                    "min_phase_steps": 120_000_000,
                     "min_episode_length": 540,
                     "min_net_turns": 0.15,
                     "min_fwd_minus_rev": 0.06,
-                    "max_upright": 1.20,
-                    "max_mean_fingertip_dist": 0.10,
+                    "max_upright": 0.30,
+                    "max_mean_fingertip_dist": 0.06,
                 },
             },
             {
@@ -324,9 +330,10 @@ def _build_continuous_curriculum_config():
                     "reward_turn_weight": 500.0,
                     "reward_reverse_weight": 550.0,
                     "turn_velocity_clip": 0.75,
-                    "reward_upright_weight": 60.0,
+                    "turn_upright_gate_std": 0.20,
+                    "reward_upright_weight": 200.0,
                     "reward_tilt_velocity_weight": 1.5,
-                    "upright_termination_threshold": 1.0,
+                    "upright_termination_threshold": 0.5,
                     "reward_action_weight": 0.10,
                     "reward_action_rate_weight": 0.06,
                     "reward_finger_pose_weight": 0.01,
@@ -340,12 +347,12 @@ def _build_continuous_curriculum_config():
                     "lost_contact_termination_distance": 0.0,
                 },
                 "advance": {
-                    "min_phase_steps": 160_000_000,
+                    "min_phase_steps": 120_000_000,
                     "min_episode_length": 540,
                     "min_net_turns": 0.10,
                     "min_fwd_minus_rev": 0.04,
-                    "max_upright": 0.70,
-                    "max_mean_fingertip_dist": 0.085,
+                    "max_upright": 0.25,
+                    "max_mean_fingertip_dist": 0.05,
                 },
             },
             {
@@ -354,20 +361,21 @@ def _build_continuous_curriculum_config():
                     "reward_turn_weight": 200.0,
                     "reward_reverse_weight": 220.0,
                     "turn_velocity_clip": 0.5,
-                    "reward_upright_weight": 1000.0,
+                    "turn_upright_gate_std": 0.15,
+                    "reward_upright_weight": 400.0,
                     "reward_tilt_velocity_weight": 5.0,
-                    "upright_termination_threshold": 0.5,
+                    "upright_termination_threshold": 0.4,
                     "reward_action_weight": 0.25,
                     "reward_action_rate_weight": 0.1,
                     "reward_finger_pose_weight": 0.02,
                     "reward_finger_velocity_weight": 0.001,
                     "milestone_bonus": 0.25,
                     "near_reward_weight": 0.0,
-                    "turn_reward_contact_distance": 0.075,
+                    "turn_reward_contact_distance": 0.035,
                     "turn_reward_min_contact_fingers": 2,
                     "turn_reward_min_fingertip_speed": 0.003,
                     "turn_reward_full_fingertip_speed": 0.015,
-                    "lost_contact_termination_distance": 0.10,
+                    "lost_contact_termination_distance": 0.06,
                     "lost_contact_min_fingers": 1,
                     "lost_contact_grace_steps": 5,
                 },
