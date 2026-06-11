@@ -100,8 +100,9 @@ class LinkerHandScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningLink
     Contact sensors are intentionally left for a later phase.
     """
 
-    action_space = gym.spaces.Box(low=-2.0, high=2.0, shape=(16,), dtype=np.float32)
-    observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(19,), dtype=np.float32)
+    # obs = [finger_q(16), cur_targets(16), screwdriver_euler(3)] = 35
+    action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(16,), dtype=np.float32)
+    observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(35,), dtype=np.float32)
     sim: SimulationCfg = _make_continuous_linker_sim_cfg()
     # 20 Hz control (override the inherited 1 Hz / decimation=60). Continuous
     # in-hand turning needs reactive finger motion; physics stays at 60 Hz.
@@ -109,6 +110,12 @@ class LinkerHandScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningLink
     # to preserve the effective horizon, and _make_continuous_linker_sim_cfg()
     # re-syncs render_interval so demos render at the control cadence.
     decimation = 3
+    # HORA-style delta actions: target[t] = target[t-1] + action_delta_scale * action.
+    # Action=0 holds current finger position; no retreat to pregrasp on idle.
+    # 0.025 rad/step at 20 Hz = 0.5 rad/s max — matches Allegro's 0.05 rad/step at 10 Hz.
+    action_delta: bool = True
+    action_delta_scale: float = 0.025
+    action_clip: float = 1.0
     episode_length_s: float = 60.0
     # The side-grasp reset is already close to the handle. Extra contact-settle
     # steps can preload the passive screwdriver tilt joints, so keep reset vertical.

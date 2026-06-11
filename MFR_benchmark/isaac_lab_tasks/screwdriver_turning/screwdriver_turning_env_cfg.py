@@ -24,9 +24,11 @@ class AllegroScrewdriverTurningEnvCfg(DirectRLEnvCfg):
     """Configuration for the MFR Allegro screwdriver turning DirectRLEnv."""
 
     # env
-    decimation = 60
+    decimation = 6
     episode_length_s = 12.0
-    action_space = gym.spaces.Box(low=-2.0, high=2.0, shape=(12,), dtype=np.float32)
+    action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(12,), dtype=np.float32)
+    # obs = [finger_q(12), screwdriver_euler(3)] = 15 (action_delta=False default)
+    # With action_delta=True: [finger_q(12), cur_targets(12), screwdriver_euler(3)] = 27
     observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(15,), dtype=np.float32)
     state_space = 0
 
@@ -49,6 +51,7 @@ class AllegroScrewdriverTurningEnvCfg(DirectRLEnvCfg):
             max_position_iteration_count=8,
             min_velocity_iteration_count=0,
             max_velocity_iteration_count=0,
+            gpu_max_rigid_patch_count=2**22,
         ),
     )
 
@@ -59,6 +62,11 @@ class AllegroScrewdriverTurningEnvCfg(DirectRLEnvCfg):
     friction_coefficient: float = 1.0
     gradual_control: bool = False
     action_offset: bool = True
+    # HORA-style incremental action: target[t] = target[t-1] + action_delta_scale * action.
+    # When True, action_offset is ignored.  Action=0 holds current target (no retreat).
+    # Scale 0.05 rad/step at 10 Hz = 0.5 rad/s max velocity, matching HORA's 1/24≈0.042.
+    action_delta: bool = False
+    action_delta_scale: float = 0.05
     action_clip: float = 1.0
     clamp_joint_targets: bool = True
     joint_target_margin: float = 0.02

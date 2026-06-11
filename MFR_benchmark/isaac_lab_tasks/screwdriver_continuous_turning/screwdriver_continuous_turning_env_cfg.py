@@ -2,6 +2,8 @@
 
 import math
 
+import gymnasium as gym
+import numpy as np
 from isaaclab.utils import configclass
 
 from MFR_benchmark.isaac_lab_tasks.screwdriver_turning.screwdriver_turning_env_cfg import (
@@ -18,6 +20,12 @@ class AllegroScrewdriverContinuousTurningEnvCfg(AllegroScrewdriverTurningEnvCfg)
     """
 
     episode_length_s: float = 60.0
+
+    # HORA-style delta actions: target[t] = target[t-1] + 0.05 * action.
+    # Action=0 holds current finger position; no retreat to pregrasp on idle.
+    action_delta: bool = True
+    # obs = [finger_q(12), cur_targets(12), screwdriver_euler(3)] = 27
+    observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(27,), dtype=np.float32)
 
     # Legacy 90-degree goal kept for metrics, not used by the reward.
     goal_euler_xyz: tuple[float, float, float] = (0.0, 0.0, -1.5707)

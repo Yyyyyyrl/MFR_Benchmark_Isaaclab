@@ -118,6 +118,14 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
         # Flag: whether to provide privileged observations
         self._asymmetric_obs = self.cfg.asymmetric_obs
 
+        # Stagger episode starts so envs do not all reset simultaneously.
+        # Without this, all envs hit max_episode_length at the same step every
+        # ~600 steps, causing the logged cumulative FwdTurns/NetTurns to drop to
+        # near 0 all at once and create a sawtooth artifact in the training log.
+        self.episode_length_buf = torch.randint(
+            0, self.max_episode_length, (self.num_envs,), device=self.device, dtype=self.episode_length_buf.dtype
+        )
+
     def _setup_scene(self):
         self.allegro = Articulation(self.cfg.robot_cfg)
         self.screwdriver = Articulation(self.cfg.screwdriver_cfg)
@@ -143,9 +151,16 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
         if action_clip > 0.0:
             actions = torch.clamp(actions, -action_clip, action_clip)
         self.actions = actions.clone()
-        target_actions = actions.clone()
-        if self.cfg.action_offset:
-            target_actions = target_actions + self._default_finger_pos
+
+        use_delta = bool(getattr(self.cfg, "action_delta", False))
+        if use_delta:
+            # HORA-style: target accumulates; action=0 holds current position.
+            delta_scale = float(getattr(self.cfg, "action_delta_scale", 0.05))
+            target_actions = self._cur_targets + delta_scale * actions
+        elif self.cfg.action_offset:
+            target_actions = actions + self._default_finger_pos
+        else:
+            target_actions = actions.clone()
         target_actions = self._clamp_finger_targets(target_actions)
 
         self._target_actions = target_actions
@@ -175,7 +190,11 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
     def _get_observations(self) -> dict[str, torch.Tensor]:
         finger_q = self.allegro.data.joint_pos[:, self._finger_joint_ids]
         screwdriver_euler = self.screwdriver.data.joint_pos[:, self._screwdriver_euler_joint_ids]
-        obs = torch.cat((finger_q, screwdriver_euler), dim=-1)
+        if bool(getattr(self.cfg, "action_delta", False)):
+            # HORA-style: include commanded finger position so policy has memory of its last target.
+            obs = torch.cat((finger_q, self._cur_targets, screwdriver_euler), dim=-1)
+        else:
+            obs = torch.cat((finger_q, screwdriver_euler), dim=-1)
 
         result = {"policy": obs}
 
@@ -285,7 +304,9 @@ class AllegroScrewdriverTurningEnv(DirectRLEnv):
         return torch.tensor(default_pos, dtype=torch.float32, device=self.device).repeat(self.num_envs, 1)
 
     def _validate_spaces(self) -> None:
-        expected_obs_dim = self.num_finger_dofs + self.obj_dof
+        # finger_q + (cur_targets if delta actions) + screwdriver_euler
+        use_delta = bool(getattr(self.cfg, "action_delta", False))
+        expected_obs_dim = self.num_finger_dofs + (self.num_finger_dofs if use_delta else 0) + self.obj_dof
         action_shape = getattr(self.single_action_space, "shape", None)
         obs_space = self.single_observation_space
         if hasattr(obs_space, "spaces"):  # gym.spaces.Dict

@@ -42,6 +42,7 @@ class AllegroScrewdriverTurningLinkerHandEnvCfg(DirectRLEnvCfg):
             max_position_iteration_count=8,
             min_velocity_iteration_count=0,
             max_velocity_iteration_count=0,
+            gpu_max_rigid_patch_count=2**22,
         ),
     )
 
